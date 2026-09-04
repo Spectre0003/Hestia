@@ -23,8 +23,8 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | Stage | Version | Focus | New tools | Status |
 |---|---|---|---|---|
 | 0 | — | Foundations (ongoing, not gated) | Python, Docker, networking, Home SOC | Ongoing |
-| 1 | v0.1 | Local model runtime + CLI chat | Ollama, LM Studio | 🔧 In progress |
-| 2 | v0.2 | Personality | YAML config | Not started |
+| 1 | v0.1 | Local model runtime + CLI chat | Ollama, LM Studio | ✅ Complete |
+| 2 | v0.2 | Personality | YAML config | ⏭️ Up next |
 | 3 | v0.3 | Conversation persistence | SQLite, backup script | Not started |
 | 4 | v0.4 | Long-term memory (no vectors yet) | SQLite tables, tag-based retrieval | Not started |
 | 5 | v0.5 | Tool calling | MCP (Python SDK), logging, permission tiers | Not started |

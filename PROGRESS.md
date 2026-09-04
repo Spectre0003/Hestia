@@ -4,7 +4,7 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
-## Stage 1 (v0.1) — Local model runtime + CLI chat
+## Stage 1 (v0.1) — Local model runtime + CLI chat — ✅ Complete
 
 **Goal:** run a local model, talk to it from a terminal — no memory, tools, or personality yet.
 
@@ -29,5 +29,27 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 - Confirmed GPU usage a different way instead: the process was tagged `Type: C` (pure compute), distinct from every other `C+G` (compute+graphics) process in the list — combined with the speed observation, that's sufficient confirmation without needing the missing memory figure.
 
 **Status:** steps 1–3 of 6 complete for this stage. Next: Python environment setup (step 4).
+
+### 2026-09-05 — Python environment, repo tooling, and the chat script
+
+**Set up the Python environment**
+- Created a `venv` inside the project folder, activated it, upgraded `pip`.
+- `pip install ollama` — the official Python client for Ollama's API.
+
+**Connected the local folder to GitHub**
+- `git init`, added `.gitignore` (excludes `venv/`, and forward-looking entries for `.env` and database files ahead of Stage 3/6), linked `origin`, and pulled down the README/PROGRESS already on GitHub with `--allow-unrelated-histories`.
+- Linked the same folder in VS Code's Source Control panel and GitHub Desktop — all three (terminal, VS Code, GitHub Desktop) now read/write the same local `.git` folder interchangeably.
+
+**Wrote `chat.py`**
+- Minimal CLI loop: reads input, sends the running in-memory conversation history to `ollama.chat(..., stream=True)`, prints the streamed response, appends it to history.
+- No persistence — history lives only for the life of the running process (that's Stage 3's job).
+- Handles a missing/unreachable Ollama service with a clear message instead of a raw stack trace.
+
+**Ran it end to end**
+- Multi-turn exchange confirmed the model correctly used earlier context (in-memory history working as intended).
+- Streaming output confirmed working, matching the `ollama run` behavior from step three.
+- Clean exit via typed `exit` and `Ctrl+C`, both tested.
+
+**Stage 1 (v0.1) milestone met:** a CLI loop where typing a message gets a coherent response from a model running entirely on this machine, with no internet call involved.
 
 ---
