@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment/secrets (from Stage 6 onward)
+.env
+
+# Databases (from Stage 3 onward)
+*.db
+*.sqlite3
+
+# OS/editor cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
