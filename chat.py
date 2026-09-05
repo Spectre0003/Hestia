@@ -125,7 +125,7 @@ def main():
 
     print(f"{persona['name']} v0.4 — talking to {MODEL_NAME}.")
     print("Commands: 'exit'/'quit' to leave, 'new' for a fresh session,")
-    print("          'remember ...' to save a fact, 'memories' to list what's stored.\n")
+    print("          'remember ...' to save a fact, 'forget ...' to remove one, 'memories' to list what's stored.\n")
 
     while True:
         try:
@@ -155,6 +155,17 @@ def main():
 
         if not user_input:
             continue  # skip empty submissions rather than sending them to the model
+
+        if memory.is_forget_command(user_input):
+            message, needs_confirmation = memory.handle_forget(conn, user_input)
+            print(message + "\n")
+            if needs_confirmation:
+                confirm = input("You: ").strip().lower()
+                if confirm == "yes":
+                    print(memory.confirm_forget_all(conn) + "\n")
+                else:
+                    print("[Cancelled.]\n")
+            continue
 
         if memory.is_remember_command(user_input):
             memory.store_explicit_memory(conn, MODEL_NAME, user_input)

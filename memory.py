@@ -29,16 +29,37 @@ from ollama import chat
 import storage
 
 REMEMBER_PREFIX = "remember"
+FORGET_PREFIX = "forget"
+FORGET_ALL_PHRASES = {"everything", "everything.", "all", "all memories", "all of it", "all of them"}
 
 EXTRACTION_SYSTEM_PROMPT = """You extract durable personal facts about the user from a single conversation exchange, for long-term memory storage.
 
-A durable fact is something like: a preference, an identity detail, an ongoing project, a relationship, or a recurring routine. It is NOT a one-off request, a question, small talk, or anything purely about the current task.
+A durable fact is: a preference, an identity detail (job, field of study, location, relationships), an ongoing project, or a recurring routine. It is NOT a one-off request, a question, small talk, or anything purely about the current task.
+
+IMPORTANT: extract the fact even if it's mentioned briefly or in passing, as a side note to an unrelated question. A message can be mostly about one thing (e.g. asking for help with code) while still containing a durable fact worth keeping (e.g. mentioning what the user studies or does for work). Don't skip a fact just because it wasn't the main point of the message.
+
+Examples:
+User: "quick question, how do I reverse a linked list in Python"
+Assistant: "..."
+-> NONE (pure task question, no personal fact)
+
+User: "I'm a nurse and just got back from a night shift, can you help me relax"
+Assistant: "..."
+-> {"key": "job_title", "content": "User works as a nurse.", "tags": ["job", "work", "nurse"]}
+
+User: "anyway, I'm a cybersecurity student so this is for a class project — how does XSS work"
+Assistant: "..."
+-> {"key": "field_of_study", "content": "User is a cybersecurity student.", "tags": ["study", "school", "cybersecurity", "education"]}
+
+User: "what's the weather like today"
+Assistant: "..."
+-> NONE
 
 Given the user's message and the assistant's reply, respond with ONLY one of:
 - A JSON object: {"key": "<short_snake_case_id_or_null>", "content": "<one sentence fact, third person>", "tags": ["<tag1>", "<tag2>"]}
 - The single word: NONE
 
-Use "key" only for facts that can only have one true value at a time (e.g. favorite_color, home_city, job_title) — this lets a later fact overwrite an earlier one instead of both being stored. Use null for facts that can coexist (e.g. hobbies, one-off events).
+Use "key" only for facts that can only have one true value at a time (e.g. favorite_color, home_city, job_title, field_of_study) — this lets a later fact overwrite an earlier one instead of both being stored. Use null for facts that can coexist (e.g. hobbies, one-off events).
 Respond with ONLY the JSON object or NONE — no other text."""
 
 
@@ -110,6 +131,55 @@ def store_explicit_memory(conn, model_name, user_input):
         return None
     key, tags = structure_fact(model_name, content)
     return storage.upsert_memory(conn, content=content, tags=tags, source="explicit", key=key)
+
+
+def is_forget_command(user_input):
+    return user_input.strip().lower().startswith(FORGET_PREFIX)
+
+
+def _strip_forget_prefix(user_input):
+    text = re.sub(r"(?i)^forget\b", "", user_input.strip()).strip()
+    return text.lstrip(":").strip()
+
+
+def handle_forget(conn, user_input):
+    """
+    Handle a 'forget ...' command. Three forms:
+    - "forget <id>"          — delete by numeric id (shown in `memories`)
+    - "forget <key>"         — delete by canonical key (e.g. favorite_color)
+    - "forget everything"    — wipe all stored memories
+
+    Returns a tuple: (message_to_print, needs_confirmation).
+    When needs_confirmation is True, the caller must ask the user to
+    confirm before calling confirm_forget_all — wiping everything is
+    destructive and shouldn't happen on a single ambiguous command.
+    """
+    target = _strip_forget_prefix(user_input)
+    if not target:
+        return ("[Forget what? Try 'forget <id>', 'forget <key>', or 'forget everything'.]", False)
+
+    if target.lower() in FORGET_ALL_PHRASES:
+        count = len(storage.get_all_memories(conn))
+        if count == 0:
+            return ("[Nothing to forget — no memories stored.]", False)
+        return (f"[This will permanently delete all {count} stored memories. Type 'yes' to confirm, anything else to cancel.]", True)
+
+    if target.isdigit():
+        deleted = storage.delete_memory_by_id(conn, int(target))
+        if deleted:
+            return (f"[Forgot memory #{target}.]", False)
+        return (f"[No memory with id {target} found. Try 'memories' to see what's stored.]", False)
+
+    deleted = storage.delete_memory_by_key(conn, target)
+    if deleted:
+        return (f"[Forgot memory with key '{target}'.]", False)
+    return (f"[Couldn't find a memory with id or key '{target}'. Try 'memories' to see ids and keys.]", False)
+
+
+def confirm_forget_all(conn):
+    """Actually wipe every memory. Only call this after explicit user confirmation."""
+    count = storage.clear_all_memories(conn)
+    return f"[Forgot all {count} memories.]"
 
 
 def extract_auto_memory(conn, model_name, user_message, assistant_reply):

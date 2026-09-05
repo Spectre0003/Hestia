@@ -167,3 +167,31 @@ def get_all_memories(conn):
     return conn.execute(
         "SELECT id, key, content, tags, source, created_at, updated_at FROM memories"
     ).fetchall()
+
+
+def get_memory_by_id(conn, memory_id):
+    return conn.execute(
+        "SELECT id, key, content, tags, source, created_at, updated_at FROM memories WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+
+
+def delete_memory_by_id(conn, memory_id):
+    """Delete one memory by id. Returns True if a row was actually deleted."""
+    cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_memory_by_key(conn, key):
+    """Delete one memory by its canonical key. Returns True if found and deleted."""
+    cursor = conn.execute("DELETE FROM memories WHERE key = ?", (key,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def clear_all_memories(conn):
+    """Delete every stored memory. Returns the number of rows removed."""
+    cursor = conn.execute("DELETE FROM memories")
+    conn.commit()
+    return cursor.rowcount
