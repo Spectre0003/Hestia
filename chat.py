@@ -1,16 +1,20 @@
 """
-Hestia — Stage 2 (v0.2): Personality via YAML config
+Hestia — Stage 3 (v0.3): Conversation persistence
 
 A command-line chat loop that talks to a local model running in Ollama,
-now with a persona loaded from personality.yaml and injected as a system
-message. Still no persistence and no tools — those come in later stages.
+with a persona loaded from personality.yaml and conversation history
+persisted to SQLite via storage.py. Default behavior is a fresh session
+every launch; pass --resume to continue the most recent session instead.
+The in-chat `new` command starts a fresh session mid-run without
+restarting. No tools yet — that's Stage 5.
 """
 
 import sys
-import yaml
 import argparse
+import yaml
 from ollama import chat
-import db
+
+import storage
 
 MODEL_NAME = "qwen2.5:7b"
 PERSONALITY_PATH = "personality.yaml"
@@ -84,53 +88,68 @@ def build_system_prompt(persona):
     return "\n".join(line for line in lines if line)
 
 
+def start_history(persona, conn, session_id):
+    """
+    Build a fresh in-memory history for a session: the system prompt,
+    followed by that session's recent messages loaded back from SQLite
+    (empty for a brand-new session).
+    """
+    system_prompt = build_system_prompt(persona)
+    history = [{"role": "system", "content": system_prompt}]
+    history.extend(storage.load_recent_messages(conn, session_id))
+    return history
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hestia chat interface")
-    parser.add_argument("--resume", action="store_true", help="Resume the latest session")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Continue the most recent session instead of starting a new one",
+    )
     args = parser.parse_args()
 
-    db.init_db()
+    persona = load_personality()
+    conn = storage.get_connection()
 
     if args.resume:
-        session_id = db.get_latest_session_id()
-        if not session_id:
+        session_id = storage.get_last_session_id(conn)
+        if session_id is None:
             print("[No previous session found. Starting a new one.]\n")
-            session_id = db.create_new_session_id()
-        else:
-            print(f"[Resuming session: {session_id}]\n")
+            session_id = storage.start_new_session(conn)
     else:
-        session_id = db.create_new_session_id()
+        session_id = storage.start_new_session(conn)
 
-    persona = load_personality()
-    system_prompt = build_system_prompt(persona)
+    history = start_history(persona, conn, session_id)
 
-    # System message goes in once, at index 0 — every later append (user/
-    # assistant turns) happens after it, so it's always the first thing
-    # the model sees on every call.
-    history = [{"role": "system", "content": system_prompt}]
-
-    previous_messages = db.load_messages(session_id)
-    if previous_messages:
-        history.extend(previous_messages)
-
-    print(f"{persona['name']} v0.3 — talking to {MODEL_NAME}. Type 'exit' or 'quit' to leave.\n")
+    print(f"{persona['name']} v0.3 — talking to {MODEL_NAME}.")
+    print("Type 'exit' or 'quit' to leave, 'new' to start a fresh session.\n")
 
     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
+            storage.end_session(conn, session_id)
+            conn.close()
             break
 
         if user_input.lower() in ("exit", "quit"):
             print("Exiting.")
+            storage.end_session(conn, session_id)
+            conn.close()
             break
+
+        if user_input.lower() == "new":
+            storage.end_session(conn, session_id)
+            session_id = storage.start_new_session(conn)
+            history = start_history(persona, conn, session_id)
+            print("[Started a new session.]\n")
+            continue
 
         if not user_input:
             continue  # skip empty submissions rather than sending them to the model
 
         history.append({"role": "user", "content": user_input})
-        db.save_message(session_id, "user", user_input)
 
         print(f"{persona['name']}: ", end="", flush=True)
         assistant_reply = ""
@@ -149,7 +168,11 @@ def main():
 
         print("\n")
         history.append({"role": "assistant", "content": assistant_reply})
-        db.save_message(session_id, "assistant", assistant_reply)
+
+        # Only log once both sides of the exchange succeeded — an
+        # unanswered user message shouldn't end up persisted.
+        storage.log_message(conn, session_id, "user", user_input)
+        storage.log_message(conn, session_id, "assistant", assistant_reply)
 
 
 if __name__ == "__main__":
