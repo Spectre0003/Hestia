@@ -4,6 +4,42 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 4 (v0.4) — Long-term memory — ✅ Complete
+
+**Goal:** facts about the user persist independent of any single session or conversation, closing the gap Stage 3 left open (a fact mentioned once was only ever retrievable within the session it was said in, and only within the 20-exchange cap).
+
+### 2026-09-05 — memories table, hybrid capture, tag-based retrieval, and a round of real-world bug fixes
+
+**Designed a hybrid capture model**
+- Explicit: any message starting with `remember` is stored verbatim, no judgment call.
+- Automatic: after every normal exchange, a short secondary call to the model asks whether that exchange contains a durable personal fact worth keeping — separate from the main conversation, never shown to the user.
+- Both paths ask the model for an optional `key` (for facts with only one true value at a time, like `favorite_color`) so a later statement overwrites the earlier one instead of both being stored side by side.
+
+**Built the storage and retrieval layer**
+- New `memories` table in `storage.py`: `key` (nullable, unique), `content`, `tags`, `source` (`auto`/`explicit`), timestamps. `upsert_memory()` handles key-based overwrite.
+- `memory.py`: extraction prompt with few-shot examples, tag-based retrieval, and context injection that's added to the API call for one turn only — never saved into persisted conversation history, so it can't compound or pollute what gets stored.
+- Added a `memories` command to list everything stored, for visibility into what's actually being captured.
+
+**Real-world testing surfaced three bugs prompt design alone didn't catch**
+- *Spelling mismatch:* retrieval used literal substring matching on tags; British spelling ("favourite colour") didn't match American-spelled tags ("favorite", "color") the model generated, so a stored fact was invisible to a query about the exact same thing. Fixed with normalized token matching (spelling variants, plurals, punctuation all collapse to the same form).
+- *Missed inference:* the model failed to extract an identity fact ("I'm a cybersecurity student") mentioned as a side note alongside an unrelated technical question. Fixed by rewriting the extraction prompt with explicit "extract it even if it's incidental" guidance and concrete few-shot examples — 7B-class local models respond far better to examples than abstract rules.
+- *Fragment content:* extraction sometimes stored just the value ("green") instead of a complete fact ("User's favorite color is green"), which made it not just hard to read but hard to *find* — a tag of only `["preference"]` carries no searchable signal. Fixed with write-time repair (`_repair_content`, `_enrich_tags`) that reconstructs a full sentence from the key when the model is lazy, and folds the fact's own nouns into the tags regardless of what the model tagged it with.
+- Also added a threshold: below ~25 stored memories, retrieval skips keyword filtering entirely and injects everything. Keyword overlap can't bridge unrelated phrasing ("cybersecurity student" → "job status") — at a small store size, injecting all of it is simpler and strictly more capable than trying to filter.
+
+**Added `forget`**, prompted by realizing there was no way back out of a bad memory. Three modes: by id, by canonical key, or "forget everything" — the last one requires typed confirmation before anything is deleted, since it's destructive. Verified deletes are genuine (`DELETE FROM`, not a status flag) down to the raw SQL row count, not just filtered out by application logic.
+
+**Verified**
+- Cross-session recall: a fact stated in one session correctly surfaces in a brand-new session with no `--resume`, for both the explicit and automatic capture paths.
+- Key-based overwrite: restating a key-able fact with a new value replaces the old row rather than duplicating it.
+- Latency: the extraction call after every exchange is acceptable in practice on the target hardware; only the very first message of a run is noticeably slower, and that's Ollama's model-load cold start, unrelated to extraction.
+- `forget` verified in all three modes, including that the confirmation step genuinely blocks deletion until confirmed.
+
+**Known, deliberate limitation:** retrieval is keyword-based, not semantic. Once the store grows past the always-inject threshold, a query that shares no words with a stored fact (e.g. asking about "job status" when the memory says "cybersecurity student") won't surface it — no amount of prompt tuning fixes that; it needs actual embeddings. That's explicitly Stage 9's job, not a bug to chase down now.
+
+**Stage 4 (v0.4) milestone met:** facts persist across sessions independent of conversation boundaries, with a working correction path (`forget`) for when capture gets it wrong.
+
+---
+
 ## Roadmap change — 2026-09-05
 
 **Dropped Stage 11 (v2.0 — Home SOC / Wazuh convergence)** from the roadmap, and removed the "Home SOC" mention from Stage 0's ongoing foundations list. That convergence work may become its own separate project later, but it's no longer part of Hestia's plan. Hestia's roadmap now ends at Stage 10 (v1.0 — voice, GUI, background service).
