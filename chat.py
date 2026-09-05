@@ -124,7 +124,8 @@ def main():
     history = start_history(persona, conn, session_id)
 
     print(f"{persona['name']} v0.4 — talking to {MODEL_NAME}.")
-    print("Type 'exit' or 'quit' to leave, 'new' to start a fresh session, 'remember ...' to save a fact.\n")
+    print("Commands: 'exit'/'quit' to leave, 'new' for a fresh session,")
+    print("          'remember ...' to save a fact, 'memories' to list what's stored.\n")
 
     while True:
         try:
@@ -146,6 +147,10 @@ def main():
             session_id = storage.start_new_session(conn)
             history = start_history(persona, conn, session_id)
             print("[Started a new session.]\n")
+            continue
+
+        if user_input.lower() == "memories":
+            print(memory.format_memory_list(conn) + "\n")
             continue
 
         if not user_input:

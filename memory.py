@@ -153,19 +153,85 @@ def extract_auto_memory(conn, model_name, user_message, assistant_reply):
     return storage.upsert_memory(conn, content=content, tags=tags, source="auto", key=key)
 
 
+# Words too common to be meaningful signal for retrieval matching.
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "am",
+    "i", "me", "my", "mine", "you", "your", "yours", "it", "its",
+    "of", "to", "in", "on", "at", "for", "with", "about", "and", "or",
+    "but", "if", "so", "as", "that", "this", "these", "those", "what",
+    "whats", "which", "who", "how", "when", "where", "why", "do", "does",
+    "did", "can", "could", "would", "should", "will", "have", "has",
+    "had", "not", "no", "yes", "again", "tell", "know", "like", "get",
+}
+
+# How many memories to inject at most, so a big store can't flood the
+# prompt. Ordered by strongest overlap first.
+MAX_INJECTED_MEMORIES = 6
+
+
+def _normalize_word(word):
+    """
+    Normalize a single word so British and American spellings, plurals,
+    and casing all collapse to the same form. Correctness matters less
+    than *consistency* here — both sides of the comparison get the same
+    treatment, so even a crude rule still matches like with like.
+    """
+    w = word.lower()
+
+    # British -> American spelling variants
+    if len(w) >= 6 and "our" in w[1:]:
+        w = w[0] + w[1:].replace("our", "or")   # colour->color, favourite->favorite
+    if w.endswith("ise"):
+        w = w[:-3] + "ize"
+    if w.endswith("isation"):
+        w = w[:-7] + "ization"
+    if w.endswith("re") and len(w) > 4:
+        w = w[:-2] + "er"                       # centre->center, theatre->theater
+    w = w.replace("grey", "gray")
+
+    # crude plural / possessive stripping
+    if w.endswith("'s"):
+        w = w[:-2]
+    if len(w) > 3 and w.endswith("es") and not w.endswith("ses"):
+        w = w[:-2]
+    elif len(w) > 3 and w.endswith("s"):
+        w = w[:-1]
+
+    return w
+
+
+def _tokenize(text):
+    """Split text into a set of normalized, meaningful tokens."""
+    words = re.findall(r"[a-zA-Z']+", text or "")
+    tokens = set()
+    for word in words:
+        normalized = _normalize_word(word)
+        if normalized and normalized not in STOPWORDS and len(normalized) > 2:
+            tokens.add(normalized)
+    return tokens
+
+
 def retrieve_relevant_memories(conn, text):
     """
-    Return stored memories whose tags appear (case-insensitive) as a
-    substring of the given text. Simple on purpose — no vectors until
-    Stage 9.
+    Return stored memories that share meaningful words with the given
+    text, strongest overlap first. Matches against both tags and the
+    memory content, using normalized tokens so spelling variants
+    ("colour"/"color") and plurals still match. Simple on purpose — no
+    embeddings until Stage 9.
     """
-    text_lower = text.lower()
-    matches = []
+    query_tokens = _tokenize(text)
+    if not query_tokens:
+        return []
+
+    scored = []
     for row in storage.get_all_memories(conn):
-        tags = [t.strip().lower() for t in row["tags"].split(",") if t.strip()]
-        if any(tag and tag in text_lower for tag in tags):
-            matches.append(row)
-    return matches
+        memory_tokens = _tokenize(row["tags"]) | _tokenize(row["content"])
+        overlap = query_tokens & memory_tokens
+        if overlap:
+            scored.append((len(overlap), row))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [row for _, row in scored[:MAX_INJECTED_MEMORIES]]
 
 
 def format_memory_context(memories):
@@ -174,4 +240,21 @@ def format_memory_context(memories):
         return None
     lines = ["Relevant things you know about the user:"]
     lines.extend(f"- {m['content']}" for m in memories)
+    return "\n".join(lines)
+
+
+def format_memory_list(conn):
+    """
+    Human-readable dump of everything stored, for the `memories`
+    command. Useful for checking what actually got captured rather than
+    inferring it from replies.
+    """
+    rows = storage.get_all_memories(conn)
+    if not rows:
+        return "[No memories stored yet.]"
+    lines = [f"[{len(rows)} memory/memories stored]"]
+    for row in rows:
+        key_part = f" (key: {row['key']})" if row["key"] else ""
+        lines.append(f"  #{row['id']} [{row['source']}]{key_part} {row['content']}")
+        lines.append(f"      tags: {row['tags']}")
     return "\n".join(lines)
