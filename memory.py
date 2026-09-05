@@ -59,6 +59,10 @@ Given the user's message and the assistant's reply, respond with ONLY one of:
 - A JSON object: {"key": "<short_snake_case_id_or_null>", "content": "<one sentence fact, third person>", "tags": ["<tag1>", "<tag2>"]}
 - The single word: NONE
 
+RULES for "content": it must be a COMPLETE standalone sentence naming both the subject and the value. Write "User's favorite color is green." — NOT just "green". Someone reading the content alone, with no other context, must understand the whole fact.
+
+RULES for "tags": include the core nouns of the fact itself, not just an abstract category. For a favorite color, use ["color", "favorite", "green"] — NOT just ["preference"]. Tags are used to find this fact later, so generic tags make it unfindable.
+
 Use "key" only for facts that can only have one true value at a time (e.g. favorite_color, home_city, job_title, field_of_study) — this lets a later fact overwrite an earlier one instead of both being stored. Use null for facts that can coexist (e.g. hobbies, one-off events).
 Respond with ONLY the JSON object or NONE — no other text."""
 
@@ -112,6 +116,35 @@ def structure_fact(model_name, content):
         return None, ["general"]
 
 
+def _repair_content(content, key):
+    """
+    Rescue a fragmentary extraction. A 7B model will sometimes return
+    just "green" as the content when the key is "favorite_color" —
+    technically the right value, but useless once the key isn't in
+    front of it. If the content is too short to stand alone and there's
+    a key to work from, rebuild it into a full sentence.
+    """
+    content = (content or "").strip().rstrip(".")
+    if not content:
+        return None
+    if len(content.split()) >= 4 or not key:
+        return content if content.endswith(".") else content + "."
+    label = key.replace("_", " ")
+    return f"User's {label} is {content}."
+
+
+def _enrich_tags(tags, content, key):
+    """
+    Make sure tags carry the fact's own nouns, not just an abstract
+    category. A memory tagged only "preference" can't be found by
+    anything; folding in tokens from the key and content keeps it
+    reachable even when the model tags lazily.
+    """
+    tag_set = {str(t).strip().lower() for t in tags if str(t).strip()}
+    tag_set |= _tokenize(key or "")
+    tag_set |= _tokenize(content or "")
+    tag_set.discard("user")
+    return sorted(t for t in tag_set if t)
 def is_remember_command(user_input):
     return user_input.strip().lower().startswith(REMEMBER_PREFIX)
 
@@ -130,6 +163,7 @@ def store_explicit_memory(conn, model_name, user_input):
     if not content:
         return None
     key, tags = structure_fact(model_name, content)
+    tags = _enrich_tags(tags, content, key)
     return storage.upsert_memory(conn, content=content, tags=tags, source="explicit", key=key)
 
 
@@ -217,8 +251,11 @@ def extract_auto_memory(conn, model_name, user_message, assistant_reply):
     content = data.get("content")
     if not content:
         return None
-    tags = data.get("tags") or ["general"]
     key = data.get("key") or None
+    content = _repair_content(content, key)
+    if not content:
+        return None
+    tags = _enrich_tags(data.get("tags") or [], content, key)
 
     return storage.upsert_memory(conn, content=content, tags=tags, source="auto", key=key)
 
@@ -234,9 +271,18 @@ STOPWORDS = {
     "had", "not", "no", "yes", "again", "tell", "know", "like", "get",
 }
 
-# How many memories to inject at most, so a big store can't flood the
-# prompt. Ordered by strongest overlap first.
+# How many memories to inject at most when filtering by relevance, so
+# a big store can't flood the prompt. Ordered by strongest overlap first.
 MAX_INJECTED_MEMORIES = 6
+
+# Below this many total memories, skip keyword filtering entirely and
+# inject everything. Keyword matching can only find facts that share
+# literal words with the question — it can't connect "cybersecurity
+# student" to "what's my job status". While the store is small enough
+# that everything fits comfortably in the prompt, injecting all of it
+# is both simpler and strictly more capable. Real semantic retrieval
+# arrives in Stage 9 with embeddings.
+ALWAYS_INJECT_LIMIT = 25
 
 
 def _normalize_word(word):
@@ -283,19 +329,30 @@ def _tokenize(text):
 
 def retrieve_relevant_memories(conn, text):
     """
-    Return stored memories that share meaningful words with the given
-    text, strongest overlap first. Matches against both tags and the
-    memory content, using normalized tokens so spelling variants
-    ("colour"/"color") and plurals still match. Simple on purpose — no
-    embeddings until Stage 9.
+    Return memories to inject for this turn.
+
+    While the store is small (<= ALWAYS_INJECT_LIMIT), returns
+    everything — keyword overlap can't bridge meaning, so filtering at
+    that size loses facts for no real benefit. Above that, falls back to
+    token-overlap matching against the memory's key, tags, and content,
+    strongest overlap first.
     """
+    all_memories = storage.get_all_memories(conn)
+
+    if len(all_memories) <= ALWAYS_INJECT_LIMIT:
+        return all_memories
+
     query_tokens = _tokenize(text)
     if not query_tokens:
         return []
 
     scored = []
-    for row in storage.get_all_memories(conn):
-        memory_tokens = _tokenize(row["tags"]) | _tokenize(row["content"])
+    for row in all_memories:
+        memory_tokens = (
+            _tokenize(row["tags"])
+            | _tokenize(row["content"])
+            | _tokenize(row["key"] or "")
+        )
         overlap = query_tokens & memory_tokens
         if overlap:
             scored.append((len(overlap), row))
@@ -305,11 +362,29 @@ def retrieve_relevant_memories(conn, text):
 
 
 def format_memory_context(memories):
-    """Turn matched memory rows into a single context string for injection."""
+    """
+    Turn memory rows into a context string for injection. Phrased
+    directively — an earlier, softer version led the model to reply
+    "I don't have access to your personal information" while the facts
+    were sitting right there in its context.
+    """
     if not memories:
         return None
-    lines = ["Relevant things you know about the user:"]
-    lines.extend(f"- {m['content']}" for m in memories)
+    lines = [
+        "The following are facts you already know about the user, "
+        "remembered from previous conversations. Treat them as established "
+        "knowledge you have. If the user asks about any of these, answer "
+        "directly from them — never say you lack access to their personal "
+        "information when it appears below. Do not mention that these were "
+        "retrieved from memory; simply know them.",
+        "",
+    ]
+    for m in memories:
+        if m["key"]:
+            label = m["key"].replace("_", " ")
+            lines.append(f"- {label}: {m['content']}")
+        else:
+            lines.append(f"- {m['content']}")
     return "\n".join(lines)
 
 
