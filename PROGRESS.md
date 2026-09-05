@@ -4,6 +4,31 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 3 (v0.3) — Conversation persistence — ✅ Complete
+
+**Goal:** conversations survive process restarts. Built with SQLite and a backup script.
+
+### 2026-09-05 — Database layer, session management, and backups
+
+**Added `db.py`**
+- Manages an SQLite database `hestia.db` with a `messages` table.
+- Stores `session_id`, `role`, `content`, and a `timestamp`.
+- Functions for loading, saving, and managing session UUIDs.
+
+**Updated `chat.py`**
+- Now accepts a `--resume` flag to continue the most recent session.
+- Generates a new session ID by default unless `--resume` is passed.
+- Loads existing session history and injects the system prompt dynamically on startup.
+- Saves user messages and assistant responses to the DB in real-time.
+
+**Created `backup.py`**
+- Simple script to copy the `hestia.db` to a `backups/` folder with a timestamped filename.
+- Fulfils the Stage 3 principle of scheduled backups for persistent databases.
+
+**Status:** Stage 3 (v0.3) milestone met.
+
+---
+
 ## Stage 2 (v0.2) — Personality — ✅ Complete
 
 **Goal:** move Hestia's behavior from nothing (Stage 1 had zero personality shaping) into a YAML config, so tone, values, and behavioral boundaries are data, not code.

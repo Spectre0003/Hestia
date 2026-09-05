@@ -8,7 +8,9 @@ message. Still no persistence and no tools — those come in later stages.
 
 import sys
 import yaml
+import argparse
 from ollama import chat
+import db
 
 MODEL_NAME = "qwen2.5:7b"
 PERSONALITY_PATH = "personality.yaml"
@@ -83,6 +85,22 @@ def build_system_prompt(persona):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Hestia chat interface")
+    parser.add_argument("--resume", action="store_true", help="Resume the latest session")
+    args = parser.parse_args()
+
+    db.init_db()
+
+    if args.resume:
+        session_id = db.get_latest_session_id()
+        if not session_id:
+            print("[No previous session found. Starting a new one.]\n")
+            session_id = db.create_new_session_id()
+        else:
+            print(f"[Resuming session: {session_id}]\n")
+    else:
+        session_id = db.create_new_session_id()
+
     persona = load_personality()
     system_prompt = build_system_prompt(persona)
 
@@ -91,7 +109,11 @@ def main():
     # the model sees on every call.
     history = [{"role": "system", "content": system_prompt}]
 
-    print(f"{persona['name']} v0.2 — talking to {MODEL_NAME}. Type 'exit' or 'quit' to leave.\n")
+    previous_messages = db.load_messages(session_id)
+    if previous_messages:
+        history.extend(previous_messages)
+
+    print(f"{persona['name']} v0.3 — talking to {MODEL_NAME}. Type 'exit' or 'quit' to leave.\n")
 
     while True:
         try:
@@ -108,6 +130,7 @@ def main():
             continue  # skip empty submissions rather than sending them to the model
 
         history.append({"role": "user", "content": user_input})
+        db.save_message(session_id, "user", user_input)
 
         print(f"{persona['name']}: ", end="", flush=True)
         assistant_reply = ""
@@ -126,6 +149,7 @@ def main():
 
         print("\n")
         history.append({"role": "assistant", "content": assistant_reply})
+        db.save_message(session_id, "assistant", assistant_reply)
 
 
 if __name__ == "__main__":
