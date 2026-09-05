@@ -1,6 +1,6 @@
 # Hestia
 
-A fully local, privacy-first personal AI assistant — built stage by stage, from a bare Ollama install up through personality, memory, tool use, voice, and eventual convergence with a home security stack.
+A fully local, privacy-first personal AI assistant — built stage by stage, from a bare Ollama install up through personality, memory, tool use, and voice.
 
 This repo is the public build log: what got built, in what order, and why.
 
@@ -22,7 +22,7 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 
 | Stage | Version | Focus | New tools | Status |
 |---|---|---|---|---|
-| 0 | — | Foundations (ongoing, not gated) | Python, Docker, networking, Home SOC | Ongoing |
+| 0 | — | Foundations (ongoing, not gated) | Python, Docker, networking | Ongoing |
 | 1 | v0.1 | Local model runtime + CLI chat | Ollama, LM Studio | ✅ Complete |
 | 2 | v0.2 | Personality | YAML config | ✅ Complete |
 | 3 | v0.3 | Conversation persistence | SQLite, backup script | ✅ Complete |
@@ -33,7 +33,6 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | 8 | v0.8 | Internet tools | Web search/API MCP servers, sandboxed tier | Not started |
 | 9 | v0.9 | Advanced memory | Local embeddings, vector store, RAG | Not started |
 | 10 | v1.0 | Actual assistant | Voice (whisper.cpp, Kokoro/XTTS), GUI, background service | Not started |
-| 11 | v2.0 | Home SOC convergence | Wazuh MCP server | Not started |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 

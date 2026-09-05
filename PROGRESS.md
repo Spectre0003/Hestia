@@ -4,6 +4,12 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Roadmap change — 2026-09-05
+
+**Dropped Stage 11 (v2.0 — Home SOC / Wazuh convergence)** from the roadmap, and removed the "Home SOC" mention from Stage 0's ongoing foundations list. That convergence work may become its own separate project later, but it's no longer part of Hestia's plan. Hestia's roadmap now ends at Stage 10 (v1.0 — voice, GUI, background service).
+
+---
+
 ## Stage 3 (v0.3) — Conversation persistence — ✅ Complete
 
 **Goal:** conversations survive process restarts, without silently growing every prompt into an ever-larger blob of history.
