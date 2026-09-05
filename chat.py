@@ -1,12 +1,13 @@
 """
-Hestia — Stage 3 (v0.3): Conversation persistence
+Hestia — Stage 4 (v0.4): Long-term memory
 
 A command-line chat loop that talks to a local model running in Ollama,
-with a persona loaded from personality.yaml and conversation history
-persisted to SQLite via storage.py. Default behavior is a fresh session
-every launch; pass --resume to continue the most recent session instead.
-The in-chat `new` command starts a fresh session mid-run without
-restarting. No tools yet — that's Stage 5.
+with a persona loaded from personality.yaml, conversation history
+persisted to SQLite via storage.py, and long-term memory via memory.py.
+Memory has two capture paths (a 'remember ...' command, and automatic
+extraction after every exchange) and tag-based retrieval that injects
+relevant facts into a given call without polluting saved history.
+No tools yet — that's Stage 5.
 """
 
 import sys
@@ -15,6 +16,7 @@ import yaml
 from ollama import chat
 
 import storage
+import memory
 
 MODEL_NAME = "qwen2.5:7b"
 PERSONALITY_PATH = "personality.yaml"
@@ -121,8 +123,8 @@ def main():
 
     history = start_history(persona, conn, session_id)
 
-    print(f"{persona['name']} v0.3 — talking to {MODEL_NAME}.")
-    print("Type 'exit' or 'quit' to leave, 'new' to start a fresh session.\n")
+    print(f"{persona['name']} v0.4 — talking to {MODEL_NAME}.")
+    print("Type 'exit' or 'quit' to leave, 'new' to start a fresh session, 'remember ...' to save a fact.\n")
 
     while True:
         try:
@@ -149,13 +151,28 @@ def main():
         if not user_input:
             continue  # skip empty submissions rather than sending them to the model
 
+        if memory.is_remember_command(user_input):
+            memory.store_explicit_memory(conn, MODEL_NAME, user_input)
+            print("[Got it, I'll remember that.]\n")
+            continue
+
         history.append({"role": "user", "content": user_input})
 
         print(f"{persona['name']}: ", end="", flush=True)
         assistant_reply = ""
 
+        # Retrieval happens against the API call only — matched memories
+        # never get appended to `history`, so they can't compound or get
+        # persisted as if they were part of the actual conversation.
+        relevant_memories = memory.retrieve_relevant_memories(conn, user_input)
+        memory_context = memory.format_memory_context(relevant_memories)
+        if memory_context:
+            call_messages = history[:-1] + [{"role": "system", "content": memory_context}, history[-1]]
+        else:
+            call_messages = history
+
         try:
-            stream = chat(model=MODEL_NAME, messages=history, stream=True)
+            stream = chat(model=MODEL_NAME, messages=call_messages, stream=True)
             for chunk in stream:
                 token = chunk["message"]["content"]
                 print(token, end="", flush=True)
@@ -173,6 +190,10 @@ def main():
         # unanswered user message shouldn't end up persisted.
         storage.log_message(conn, session_id, "user", user_input)
         storage.log_message(conn, session_id, "assistant", assistant_reply)
+
+        # Runs after every exchange; failures here never break the chat
+        # loop itself (see memory.extract_auto_memory).
+        memory.extract_auto_memory(conn, MODEL_NAME, user_input, assistant_reply)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,10 @@
 """
-Hestia — storage layer (Stage 3 / v0.3)
+Hestia — storage layer (Stage 3-4 / v0.3-0.4)
 
-Handles SQLite persistence for conversations. Default behavior is a
-fresh session every launch; passing --resume at the command line (see
-chat.py) continues the most recently created session instead. This
-module knows nothing about personality or the model — it only reads
-and writes rows.
+Handles SQLite persistence for conversations (sessions/messages) and
+long-term memory (memories) — facts about the user that persist across
+sessions independent of any single conversation. This module knows
+nothing about personality or the model — it only reads and writes rows.
 """
 
 import os
@@ -30,11 +29,14 @@ def get_connection():
     """
     Open (and if needed, create) the database and its tables. Safe to
     call every startup — CREATE TABLE IF NOT EXISTS is a no-op once the
-    schema already exists.
+    schema already exists. Rows come back as sqlite3.Row, which supports
+    both index and key access — existing tuple-unpacking code elsewhere
+    keeps working unchanged.
     """
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -51,6 +53,17 @@ def get_connection():
             content TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             FOREIGN KEY (session_id) REFERENCES sessions(id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT UNIQUE,
+            content TEXT NOT NULL,
+            tags TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -115,3 +128,42 @@ def log_message(conn, session_id, role, content):
         (session_id, role, content, _now()),
     )
     conn.commit()
+
+
+def upsert_memory(conn, content, tags, source, key=None):
+    """
+    Store a long-term memory. If `key` is given and a memory with that
+    key already exists, update it in place instead of creating a
+    duplicate — this is what lets "favorite color: red" become
+    "favorite color: blue" later instead of both floating around and
+    contradicting each other. Facts without a key (most auto-captured
+    ones) always insert as new rows.
+    """
+    now = _now()
+    tags_str = ", ".join(tags) if isinstance(tags, (list, tuple)) else str(tags)
+
+    if key:
+        existing = conn.execute(
+            "SELECT id FROM memories WHERE key = ?", (key,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE memories SET content = ?, tags = ?, source = ?, updated_at = ? WHERE key = ?",
+                (content, tags_str, source, now, key),
+            )
+            conn.commit()
+            return existing["id"]
+
+    cursor = conn.execute(
+        "INSERT INTO memories (key, content, tags, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (key, content, tags_str, source, now, now),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_all_memories(conn):
+    """Return every stored memory, for tag-matching against a message."""
+    return conn.execute(
+        "SELECT id, key, content, tags, source, created_at, updated_at FROM memories"
+    ).fetchall()
