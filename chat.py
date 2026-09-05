@@ -48,18 +48,29 @@ def load_personality(path=PERSONALITY_PATH):
 def build_system_prompt(persona):
     """
     Turn the parsed personality dict into a single system-prompt string.
-    Order roughly follows: who she is, then how she behaves, then the
-    hard boundaries last, so the model sees identity before rules.
+
+    Order matters: identity first, then character description, then the
+    hard boundaries, then short imperative directives LAST. Models weight
+    the end of a long instruction block more heavily, so the concrete
+    "do this, not that" rules go there rather than getting buried in the
+    middle of abstract character prose.
+
+    Adding a new field needs one line in `list_fields` (for a YAML list)
+    or `style_fields` (for a freeform block of text) — no other code
+    changes. Editing an existing field needs no code changes at all.
     """
     lines = [
         f"You are {persona['name']}.",
         persona.get("essence", "").strip(),
     ]
 
-    traits = persona.get("traits")
-    if traits:
-        lines.append("Core traits:")
-        lines.extend(f"- {t}" for t in traits)
+    def add_list(key, label):
+        values = persona.get(key)
+        if values:
+            lines.append(f"{label}:")
+            lines.extend(f"- {v}" for v in values)
+
+    add_list("traits", "Core traits")
 
     # Freeform *_style / values fields, in a fixed, readable order.
     style_fields = [
@@ -72,6 +83,8 @@ def build_system_prompt(persona):
         ("knowledge_style", "Knowledge"),
         ("disagreement_style", "Disagreement"),
         ("relationship_to_user", "Relationship to the user"),
+        ("memory_style", "Using what you remember"),
+        ("answer_shape", "Shape of an answer"),
         ("speech_style", "Speech style"),
         ("formality_range", "Formality"),
     ]
@@ -80,12 +93,17 @@ def build_system_prompt(persona):
         if value:
             lines.append(f"{label}: {value.strip()}")
 
+    add_list("avoids", "Never do these")
+
     boundaries = persona.get("boundaries")
     if boundaries:
         lines.append("Boundaries:")
         for key, value in boundaries.items():
             if value:
                 lines.append(f"- {key.replace('_', ' ')}: {value.strip()}")
+
+    # Last on purpose — recency weighting.
+    add_list("directives", "Above all, follow these")
 
     return "\n".join(line for line in lines if line)
 

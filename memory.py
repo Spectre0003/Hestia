@@ -363,20 +363,28 @@ def retrieve_relevant_memories(conn, text):
 
 def format_memory_context(memories):
     """
-    Turn memory rows into a context string for injection. Phrased
-    directively — an earlier, softer version led the model to reply
+    Turn memory rows into a context string for injection.
+
+    Wording here is a balancing act. Too soft and the model replies
     "I don't have access to your personal information" while the facts
-    were sitting right there in its context.
+    sit in its context. Too strong and it works remembered details into
+    every reply as proof it has them. This aims at the middle: you know
+    these, use them when relevant, otherwise stay quiet about them.
     """
     if not memories:
         return None
     lines = [
-        "The following are facts you already know about the user, "
-        "remembered from previous conversations. Treat them as established "
-        "knowledge you have. If the user asks about any of these, answer "
-        "directly from them — never say you lack access to their personal "
-        "information when it appears below. Do not mention that these were "
-        "retrieved from memory; simply know them.",
+        "Background — things you already know about the user from past "
+        "conversations. This is established knowledge you have; if the user "
+        "asks about any of it, answer directly and never claim you lack "
+        "access to their information.",
+        "",
+        "However: do NOT bring these up unprompted. Most replies should not "
+        "reference them at all. Only use a fact when it's directly relevant "
+        "to what's being discussed right now. Never mention that you "
+        "remembered something, never work a detail in to show that you know "
+        "it, and never let these steer the topic. If none apply, ignore them "
+        "entirely and answer as though they weren't here.",
         "",
     ]
     for m in memories:
