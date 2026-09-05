@@ -6,26 +6,35 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ## Stage 3 (v0.3) — Conversation persistence — ✅ Complete
 
-**Goal:** conversations survive process restarts. Built with SQLite and a backup script.
+**Goal:** conversations survive process restarts, without silently growing every prompt into an ever-larger blob of history.
 
-### 2026-09-05 — Database layer, session management, and backups
+### 2026-09-05 — SQLite storage layer, session model, and a merge with a collaborator's parallel implementation
 
-**Added `db.py`**
-- Manages an SQLite database `hestia.db` with a `messages` table.
-- Stores `session_id`, `role`, `content`, and a `timestamp`.
-- Functions for loading, saving, and managing session UUIDs.
+**Designed and built the storage layer independently first**
+- `storage.py`: two tables, `sessions` (id, started_at, ended_at) and `messages` (id, session_id, role, content, timestamp), linked by foreign key.
+- Manual session control via a `new` command inside the chat loop, with the DB living at `data/hestia.db`.
+- Verified end to end: resume-without-`new` correctly picked up prior messages, `new` correctly closed the old session and opened an empty one, and a message cap kept reloaded history bounded.
 
-**Updated `chat.py`**
-- Now accepts a `--resume` flag to continue the most recent session.
-- Generates a new session ID by default unless `--resume` is passed.
-- Loads existing session history and injects the system prompt dynamically on startup.
-- Saves user messages and assistant responses to the DB in real-time.
+**A collaborator built a parallel Stage 3 independently in the same window**
+- Different design: single `messages` table (no dedicated sessions table), UUID session IDs, a `--resume` CLI flag (default = brand-new session every launch, `--resume` = continue the most recent one), no history cap, and a `backup.py` script for manual on-demand backups.
+- Reviewed both implementations side by side rather than picking one blind. The single-table/UUID approach had a latent bug (`get_latest_session_id` finds the session of the most recent *message* in the whole table, not the most recent *session* — fine today, fragile if that assumption ever breaks) and no cap on resumed history (fine today, will slow down or eventually break on a long-running session).
 
-**Created `backup.py`**
-- Simple script to copy the `hestia.db` to a `backups/` folder with a timestamped filename.
-- Fulfils the Stage 3 principle of scheduled backups for persistent databases.
+**Reconciled into one implementation**
+- Kept the `sessions` table design (cleaner `started_at`/`ended_at` tracking than a bare `session_id` column).
+- Adopted the collaborator's default-session-per-launch behavior plus `--resume` flag, replacing the original manual-only `new` command as the *default* (the in-chat `new` command still exists, for resetting mid-run without restarting).
+- Added a 20-exchange (40-message) cap to history reloaded via `--resume`, closing the one real gap in the collaborator's version — full session history always stays in the database regardless, the cap only affects what's reloaded into context.
+- Adopted `backup.py` from the collaborator, adapted to import `DB_PATH` from `storage.py` instead of duplicating the path, so the two files can't drift apart if the DB location ever changes.
+- Explicitly did not adopt the collaborator's proposal to sync session data to a remote/cloud store — this conflicts directly with the project's local-only privacy principle stated in README.md, and was flagged and declined rather than merged.
+- `db.py` (the collaborator's single-table/UUID module) was not added to the repo; every piece of it worth keeping was already folded into `storage.py`, `chat.py`, and `backup.py` above.
 
-**Status:** Stage 3 (v0.3) milestone met.
+**Verified**
+- Default launch always starts a new, empty session — confirmed it ignores prior sessions even when they exist.
+- `--resume` correctly loads the most recently created session, not an older one.
+- The 20-exchange cap trims correctly from the oldest end of a long session while leaving full history intact in the database.
+- `backup.py` correctly locates and copies the live database to a timestamped file under `backups/`.
+- All of the above tested against the real local setup (not just the dry-run stub testing done during development).
+
+**Stage 3 (v0.3) milestone met:** conversations persist across restarts via SQLite, with a bounded resume path and manual backups, entirely on-device.
 
 ---
 

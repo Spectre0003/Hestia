@@ -42,5 +42,5 @@ Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 - Tool output is always treated as data, never as instructions (critical from Stage 5 on)
 - Secrets live in `.env`, never hardcoded (from Stage 6 on)
 - Every tool call gets a structured log entry (from Stage 5 on)
-- Scheduled backup of any persistent database (from Stage 3 on)
+- Backup capability for any persistent database, run manually for now (from Stage 3 on; actual scheduling may come later)
 - Permission tiers enforced in code, not convention (from Stage 5 on)
