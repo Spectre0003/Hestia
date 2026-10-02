@@ -11,6 +11,9 @@ __pycache__/
 *.db
 *.sqlite3
 
+# Hestia's file-tool sandbox — the user's own files (from Stage 5 onward)
+workspace/
+
 # OS/editor cruft
 .vscode/
 .idea/

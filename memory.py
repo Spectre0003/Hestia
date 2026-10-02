@@ -221,10 +221,18 @@ def extract_auto_memory(conn, model_name, user_message, assistant_reply):
     Run the lightweight extraction call after a normal exchange. Stores
     a memory if the model judges one worth keeping; otherwise a no-op.
     Never raises — extraction problems must never break the main chat.
+
+    Pass assistant_reply=None when the reply was built from tool output.
+    Facts about the user come from the user; a reply that repeats a
+    file's contents could otherwise get text from that file stored as a
+    "fact" about them.
     """
+    exchange = f"User: {user_message}"
+    if assistant_reply is not None:
+        exchange += f"\nAssistant: {assistant_reply}"
     prompt_messages = [
         {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-        {"role": "user", "content": f"User: {user_message}\nAssistant: {assistant_reply}"},
+        {"role": "user", "content": exchange},
     ]
     try:
         response = chat(

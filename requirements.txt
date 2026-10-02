@@ -1,0 +1,5 @@
+ollama>=0.6
+pyyaml>=6.0
+# Pinned exactly: the MCP SDK's 1.x -> 2.x jump renamed core APIs
+# (FastMCP -> MCPServer, camelCase -> snake_case fields).
+mcp==2.2.0

@@ -1,12 +1,15 @@
 """
-Hestia — storage layer (Stage 3-4 / v0.3-0.4)
+Hestia — storage layer (Stage 3-5 / v0.3-0.5)
 
-Handles SQLite persistence for conversations (sessions/messages) and
+Handles SQLite persistence for conversations (sessions/messages),
 long-term memory (memories) — facts about the user that persist across
-sessions independent of any single conversation. This module knows
-nothing about personality or the model — it only reads and writes rows.
+sessions independent of any single conversation — and the tool call log
+(tool_calls), one row per tool request the model makes. This module
+knows nothing about personality or the model — it only reads and writes
+rows.
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -45,6 +48,8 @@ def get_connection():
             ended_at TEXT
         )
     """)
+    # tool_calls: JSON list, on an assistant message that asked for tools.
+    # tool_name:  which tool, on a role='tool' message.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,9 +57,18 @@ def get_connection():
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             timestamp TEXT NOT NULL,
+            tool_calls TEXT,
+            tool_name TEXT,
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
+    # Databases from before Stage 5 have `messages` without the two tool
+    # columns; CREATE TABLE IF NOT EXISTS won't touch an existing table,
+    # so add them here. Existing rows just get NULL for both.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(messages)")}
+    for column in ("tool_calls", "tool_name"):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +78,25 @@ def get_connection():
             source TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+    """)
+    # server:   which MCP server offered the tool (NULL if none did).
+    # decision: auto / approved / denied / blocked — whether it was allowed to run.
+    # status:   ok / error / skipped — what happened when it did (or didn't).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            server TEXT,
+            tool_name TEXT NOT NULL,
+            arguments TEXT NOT NULL,
+            tier INTEGER NOT NULL,
+            decision TEXT NOT NULL,
+            status TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            result_preview TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
     conn.commit()
@@ -105,12 +138,13 @@ def end_session(conn, session_id):
 def load_recent_messages(conn, session_id, limit=HISTORY_LOAD_LIMIT):
     """
     Return the last `limit` messages for a session, oldest first, as
-    {"role": ..., "content": ...} dicts ready to drop into `history`.
+    message dicts ready to drop into `history` — including tool_calls /
+    tool_name on the messages that have them.
     """
     rows = conn.execute(
         """
-        SELECT role, content FROM (
-            SELECT role, content, id FROM messages
+        SELECT role, content, tool_calls, tool_name FROM (
+            SELECT role, content, tool_calls, tool_name, id FROM messages
             WHERE session_id = ?
             ORDER BY id DESC
             LIMIT ?
@@ -118,14 +152,32 @@ def load_recent_messages(conn, session_id, limit=HISTORY_LOAD_LIMIT):
         """,
         (session_id, limit),
     ).fetchall()
-    return [{"role": role, "content": content} for role, content in rows]
+
+    messages = []
+    for row in rows:
+        message = {"role": row["role"], "content": row["content"]}
+        if row["tool_calls"]:
+            message["tool_calls"] = json.loads(row["tool_calls"])
+        if row["tool_name"]:
+            message["tool_name"] = row["tool_name"]
+        messages.append(message)
+
+    # The limit can cut an exchange in half — e.g. keep a tool result but
+    # drop the call that produced it. Start at a user message instead.
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+    return messages
 
 
-def log_message(conn, session_id, role, content):
+def log_message(conn, session_id, role, content, tool_calls=None, tool_name=None):
     """Persist a single message. Called only after a successful exchange."""
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-        (session_id, role, content, _now()),
+        """
+        INSERT INTO messages (session_id, role, content, timestamp, tool_calls, tool_name)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, role, content, _now(),
+         json.dumps(tool_calls) if tool_calls else None, tool_name),
     )
     conn.commit()
 
@@ -195,3 +247,25 @@ def clear_all_memories(conn):
     cursor = conn.execute("DELETE FROM memories")
     conn.commit()
     return cursor.rowcount
+
+
+# How much of a tool's result to keep in the log. Enough to see what
+# came back; the full result only ever lives in that turn's API call.
+RESULT_PREVIEW_CHARS = 500
+
+
+def log_tool_call(conn, session_id, server, tool_name, arguments, tier, decision, status, duration_ms, result):
+    """
+    Record one tool request — including ones that were blocked or denied
+    and never ran. Written once per request, after the outcome is known.
+    """
+    conn.execute(
+        """
+        INSERT INTO tool_calls (session_id, server, tool_name, arguments, tier, decision,
+                                status, duration_ms, result_preview, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, server, tool_name, json.dumps(arguments), tier, decision,
+         status, duration_ms, (result or "")[:RESULT_PREVIEW_CHARS], _now()),
+    )
+    conn.commit()
