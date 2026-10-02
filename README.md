@@ -27,8 +27,8 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | 2 | v0.2 | Personality | YAML config | ✅ Complete |
 | 3 | v0.3 | Conversation persistence | SQLite, backup script | ✅ Complete |
 | 4 | v0.4 | Long-term memory (no vectors yet) | SQLite tables, tag-based retrieval | ✅ Complete |
-| 5 | v0.5 | Tool calling | MCP (Python SDK), logging, permission tiers | ⏭️ Up next |
-| 6 | v0.6 | Computer interaction | PowerShell, Windows APIs, `.env`/secrets | Not started |
+| 5 | v0.5 | Tool calling | MCP (Python SDK), logging, permission tiers | ✅ Complete |
+| 6 | v0.6 | Computer interaction | PowerShell, Windows APIs, `.env`/secrets | ⏭️ Up next |
 | 7 | v0.7 | Dev environment integration | Git, Docker, VS Code, WSL2 | Not started |
 | 8 | v0.8 | Internet tools | Web search/API MCP servers, sandboxed tier | Not started |
 | 9 | v0.9 | Advanced memory | Local embeddings, vector store, RAG | Not started |
