@@ -116,6 +116,35 @@ def structure_fact(model_name, content):
         return None, ["general"]
 
 
+# Facts that can only have one true value at a time, recognised from the
+# fact's own wording. The model is asked for a key as well, but a 7B model
+# supplies one unreliably — "User's favorite color is blue." came back with
+# no key at all, so a later favourite colour would have been stored beside
+# it instead of replacing it, and both would reach the model together.
+# Where a pattern here matches it wins, so the same kind of fact always
+# lands under the same key no matter how the model felt about it that turn.
+# Anything not listed still relies on the model's own key, or none.
+KEY_PATTERNS = [
+    (r"\bfavou?rite colou?r\b", "favorite_color"),
+    (r"\bfavou?rite (food|dish|meal|cuisine)\b", "favorite_food"),
+    (r"\b(lives? in|living in|based in|resides in|home city)\b", "home_city"),
+    (r"\b(works? as|job title|occupation|employed as)\b", "job_title"),
+    (r"\b(student|studies|studying|majoring|field of study)\b", "field_of_study"),
+    (r"\b(name is|goes by)\b", "user_name"),
+    (r"\b(birthday|date of birth|born on)\b", "birthday"),
+    (r"\btime ?zone\b", "timezone"),
+]
+
+
+def _infer_key(content):
+    """Canonical key for a single-valued fact, or None if it isn't one."""
+    text = (content or "").lower()
+    for pattern, key in KEY_PATTERNS:
+        if re.search(pattern, text):
+            return key
+    return None
+
+
 def _repair_content(content, key):
     """
     Rescue a fragmentary extraction. A 7B model will sometimes return
@@ -163,6 +192,7 @@ def store_explicit_memory(conn, model_name, user_input):
     if not content:
         return None
     key, tags = structure_fact(model_name, content)
+    key = _infer_key(content) or key
     tags = _enrich_tags(tags, content, key)
     return storage.upsert_memory(conn, content=content, tags=tags, source="explicit", key=key)
 
@@ -267,6 +297,7 @@ def extract_auto_memory(conn, model_name, user_message, assistant_reply=None):
     content = _repair_content(content, key)
     if not content:
         return None
+    key = _infer_key(content) or key
     tags = _enrich_tags(data.get("tags") or [], content, key)
 
     return storage.upsert_memory(conn, content=content, tags=tags, source="auto", key=key)
