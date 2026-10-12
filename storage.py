@@ -14,7 +14,11 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-DB_DIR = "data"
+# Anchored to this file's folder rather than the working directory:
+# launching Hestia from elsewhere would otherwise silently create and
+# use a second, empty database instead of the real one.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+DB_DIR = os.path.join(_HERE, "data")
 DB_PATH = os.path.join(DB_DIR, "hestia.db")
 
 # How many past messages to reload into context when --resume pulls in
@@ -81,7 +85,8 @@ def get_connection():
         )
     """)
     # server:   which MCP server offered the tool (NULL if none did).
-    # decision: auto / approved / denied / blocked — whether it was allowed to run.
+    # decision: auto / approved / denied / blocked / invalid — whether it was
+    #           allowed to run ('invalid' = bad arguments, never offered).
     # status:   ok / error / skipped — what happened when it did (or didn't).
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tool_calls (
@@ -269,3 +274,17 @@ def log_tool_call(conn, session_id, server, tool_name, arguments, tier, decision
          status, duration_ms, (result or "")[:RESULT_PREVIEW_CHARS], _now()),
     )
     conn.commit()
+
+
+def get_recent_tool_calls(conn, limit=20):
+    """The most recent tool calls, oldest of the slice first, for the `tools` command."""
+    return conn.execute(
+        """
+        SELECT * FROM (
+            SELECT id, session_id, server, tool_name, arguments, tier, decision,
+                   status, duration_ms, result_preview, timestamp
+            FROM tool_calls ORDER BY id DESC LIMIT ?
+        ) ORDER BY id ASC
+        """,
+        (limit,),
+    ).fetchall()

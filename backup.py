@@ -13,7 +13,7 @@ from datetime import datetime
 
 import storage
 
-BACKUP_DIR = "backups"
+BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
 
 
 def backup_db():

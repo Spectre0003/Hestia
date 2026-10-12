@@ -19,6 +19,7 @@ import sys
 import json
 import argparse
 import functools
+from datetime import datetime
 import yaml
 from ollama import chat
 
@@ -252,7 +253,8 @@ def main():
     print(f"{persona['name']} v0.5 — talking to {MODEL_NAME}.")
     print(f"Tools: {', '.join(tools.available_tools()) or 'none'}")
     print("Commands: 'exit'/'quit' to leave, 'new' for a fresh session,")
-    print("          'remember ...' to save a fact, 'forget ...' to remove one, 'memories' to list what's stored.\n")
+    print("          'remember ...' to save a fact, 'forget ...' to remove one,")
+    print("          'memories' to list what's stored, 'tools' for the tool-call log.\n")
 
     while True:
         try:
@@ -280,6 +282,10 @@ def main():
 
         if user_input.lower() == "memories":
             print(memory.format_memory_list(conn) + "\n")
+            continue
+
+        if user_input.lower() == "tools":
+            print(tools.format_tool_log(conn) + "\n")
             continue
 
         if not user_input:
@@ -310,6 +316,18 @@ def main():
         # get appended to `history` itself, so they can't compound or get
         # persisted as if they were part of the actual conversation.
         call_messages = list(history)
+
+        # The clock is injected every turn rather than left to the
+        # get_current_time tool: asked the time twice in a session, the
+        # model reuses the time from its own earlier reply instead of
+        # calling the tool again.
+        now = datetime.now().astimezone().strftime("%A, %d %B %Y, %H:%M (%Z)")
+        call_messages.insert(-1, {
+            "role": "system",
+            "content": f"The current date and time is {now}. Use this, not any "
+                       f"time mentioned earlier in the conversation.",
+        })
+
         relevant_memories = memory.retrieve_relevant_memories(conn, user_input)
         memory_context = memory.format_memory_context(relevant_memories)
         if memory_context:

@@ -1,3 +1,5 @@
+# Requires Python 3.11+: the MCP SDK 2.x needs it, and tools.py uses
+# BaseExceptionGroup, a 3.11 builtin.
 ollama>=0.6
 pyyaml>=6.0
 # Pinned exactly: the MCP SDK's 1.x -> 2.x jump renamed core APIs

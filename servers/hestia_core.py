@@ -33,7 +33,8 @@ server = MCPServer("hestia_core", log_level="WARNING")
 
 # Resolved once at startup, links and all, so every check below compares
 # against the real location rather than whatever the name points to.
-WORKSPACE = os.path.realpath("workspace")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE = os.path.realpath(os.path.join(_ROOT, "workspace"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
 MAX_READ_BYTES = 200_000  # tools.py trims what actually reaches the model further
@@ -60,6 +61,9 @@ def _resolve(path):
     drive, rest = os.path.splitdrive(path)
     if drive or rest.startswith(("/", "\\")):
         raise ToolError("Use a path relative to the workspace folder, like 'notes.txt' or 'projects/plan.md'.")
+    if "\x00" in path:
+        # os.path.realpath would raise a bare ValueError on this below.
+        raise ToolError("File paths can't contain null bytes.")
     if ":" in path:
         # "notes.txt:hidden" would address an NTFS alternate data stream.
         raise ToolError("File paths can't contain ':'.")
@@ -99,7 +103,8 @@ def list_files(path: str = ".") -> str:
     if not entries:
         return f"'{_display(folder)}' is empty."
     lines = [
-        f"{entry.name}/" if entry.is_dir() else f"{entry.name}  ({entry.stat().st_size} bytes)"
+        f"{entry.name}/" if entry.is_dir()
+        else f"{entry.name}  ({entry.stat(follow_symlinks=False).st_size} bytes)"
         for entry in entries[:MAX_LIST_ENTRIES]
     ]
     if len(entries) > MAX_LIST_ENTRIES:
@@ -139,6 +144,18 @@ def write_file(path: str, content: str, overwrite: bool = False) -> str:
     with open(full, "w", encoding="utf-8") as f:
         f.write(content)
     return f"Saved {len(content)} characters to '{_display(full)}'."
+
+
+@server.tool()
+def delete_file(path: str) -> str:
+    """Delete a file from the user's workspace folder. The path is relative to the workspace, e.g. 'notes.txt'. Deletes files only, never folders, and the deletion is permanent. The user approves every deletion before it happens."""
+    full = _resolve(path)
+    if os.path.isdir(full):
+        raise ToolError(f"'{path}' is a folder, not a file. This tool only deletes files.")
+    if not os.path.isfile(full):
+        raise ToolError(f"There's no file called '{path}' in the workspace.")
+    os.remove(full)
+    return f"Deleted '{_display(full)}'."
 
 
 if __name__ == "__main__":
