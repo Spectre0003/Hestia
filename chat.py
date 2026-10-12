@@ -339,12 +339,10 @@ def main():
         storage.log_message(conn, session_id, "assistant", assistant_reply)
 
         # Runs after every exchange; failures here never break the chat
-        # loop itself (see memory.extract_auto_memory). When tools were
-        # used, the reply may repeat tool output, so only the user's own
-        # message is considered.
-        memory.extract_auto_memory(
-            conn, MODEL_NAME, user_input, None if tool_turns else assistant_reply
-        )
+        # loop itself (see memory.extract_auto_memory). Only the user's
+        # own message is ever considered — see the note there on why the
+        # assistant's reply is never evidence of a fact about the user.
+        memory.extract_auto_memory(conn, MODEL_NAME, user_input)
 
 
 if __name__ == "__main__":

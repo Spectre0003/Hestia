@@ -216,16 +216,20 @@ def confirm_forget_all(conn):
     return f"[Forgot all {count} memories.]"
 
 
-def extract_auto_memory(conn, model_name, user_message, assistant_reply):
+def extract_auto_memory(conn, model_name, user_message, assistant_reply=None):
     """
     Run the lightweight extraction call after a normal exchange. Stores
     a memory if the model judges one worth keeping; otherwise a no-op.
     Never raises — extraction problems must never break the main chat.
 
-    Pass assistant_reply=None when the reply was built from tool output.
-    Facts about the user come from the user; a reply that repeats a
-    file's contents could otherwise get text from that file stored as a
-    "fact" about them.
+    Facts about the user come from the user, never from the model's own
+    output, so the assistant's reply is not considered at all.
+    Including it fed a loop: an invented detail in one reply was stored
+    as a fact, injected on the next turn, and then repeated back as
+    something the user had said. A reply built from tool output had the
+    same problem — a file's contents becoming a "fact" about the user.
+    assistant_reply stays as an argument for callers that pass it
+    explicitly, but chat.py never does.
     """
     exchange = f"User: {user_message}"
     if assistant_reply is not None:
