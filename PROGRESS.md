@@ -4,6 +4,48 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 5 follow-up (v0.5) — first run on this machine, a memory feedback loop, and a round of hardening
+
+### 2026-10-12 — dependency gap, self-referential memory, eight fixes, and a delete tool
+
+**The Stage 5 code had never run on this machine.** It arrived from a collaborator, and `mcp` was not installed in the project venv — `chat.py` died at import. The database still had no `tool_calls` table and was dated before the Stage 5 commits; `__pycache__` held only Stage 4 modules; there was no `workspace/` folder. Everything the Stage 5 entry below reports as verified was therefore verified in the collaborator's environment, not here. `pip install -r requirements.txt` closed the gap (it pulls `mcp-types`, `httpx2`, `truststore`, `pywin32` and the HTTP-transport extras alongside `mcp` itself). The notes in this entry record what has now been reproduced on the documented hardware and what has not.
+
+**Checked the MCP 2.x API surface against the installed package** rather than trusting the migration note: `MCPServer` and its `exceptions.ToolError` resolve, `log_level` is a real constructor argument, and the types are `input_schema` and `is_error` in snake_case, as `tools.py` reads them. `call_tool`'s `read_timeout_seconds` is a `float` in 2.x where 1.x required a `timedelta` — the code passes a plain `30`, which only works on 2.x. The pin is `mcp==2.2.0`; upstream guidance is `mcp>=2,<3`, so the exact pin locks out patch fixes, kept deliberately for reproducibility.
+
+**A memory feedback loop: the model's own output becoming a fact about the user**
+- Symptom: a greeting ("Hey, what's up?") drew an unprompted reply about enjoying "something blue", and a turn later Hestia stated confidently that the user had mentioned enjoying something blue "today". The user never said it.
+- Not a hallucination in that last reply — she was reading a stored fact. `memories` showed a row created during that session: *"User mentioned enjoying something blue today."*, tagged `blueberry` and `sky`, words that only ever appeared in her own output.
+- Root cause: `extract_auto_memory` was given both the user's message and the assistant's reply. An existing memory ("favourite colour is blue") was injected, the model worked it into a greeting, and extraction then distilled that invention into a new stored fact — which was injected on the next turn and reinforced. Left alone it compounds every session.
+- The collaborator had already identified this failure mode for tool turns, passing `assistant_reply=None` so a file's contents could not become a "fact" about the user. The reasoning was right and the scope too narrow: facts about the user come from the user, tools or no tools. `chat.py` now never passes the reply at all.
+- The extraction system prompt still refers to "the assistant's reply" and its examples still show one. That mismatch predates this change and extraction works, so the tuned prompt was left alone; it is the first thing to revisit if extraction starts missing facts it used to catch.
+
+**First live exercise of the tool path on this hardware.** Tiers, approval, denial and logging all behaved: a tier-0 read ran automatically, a tier-1 write prompted, a typed `N` was recorded as `denied/skipped`, and every request produced a `tool_calls` row. Two things only the log revealed:
+- *`read_file` was never called.* Asked to read a file she had written two turns earlier, Hestia recited it from conversation history instead of opening it. The answer was right by luck; had the file changed on disk, it would have been wrong. Same root as the stale-time limitation — the model trusting its own earlier output.
+- *A deletion that was not one.* Asked to delete a file, and with no delete tool available, the model used `write_file` with empty content and then reported "I've deleted the file." The tool had returned `Saved 0 characters`. The file was still there at 0 bytes. The approval prompt is what made this visible, by showing `content: ""` plainly.
+
+**Fixes made**
+- `memory.py`: extraction no longer reads the assistant's reply (above). Added `KEY_PATTERNS` / `_infer_key`, a small map of facts that can only have one true value at a time (favourite colour and food, home city, job, field of study, name, birthday, timezone), recognised from the fact's own wording. The model is still asked for a key but supplies one unreliably — "User's favorite color is blue." came back with none — so where a pattern matches, its key wins. Both British and American spellings land on the same key, so a later statement overwrites the earlier one instead of both reaching the model together.
+- `tools.py`: arguments are now validated *before* the approval prompt, not after, so a call that cannot run regardless is logged as `invalid/error` and never spends a decision. `TOOL_GUIDANCE` gained three rules drawn from the test above: say so plainly when no tool fits rather than standing in a different one, report what a tool actually returned rather than what was intended, and re-read a file instead of trusting what was said earlier. Added `delete_file` at tier 1 and a `format_tool_log` reader.
+- `servers/hestia_core.py`: added the `delete_file` tool (files only, never folders). Null-byte paths now raise a readable `ToolError` instead of a bare `ValueError` from `os.path.realpath`, which sat outside the try block. `list_files` uses `stat(follow_symlinks=False)` so a junction to a deleted target cannot break a whole listing.
+- Working-directory anchoring: `workspace/`, `data/` and `backups/` were all resolved against the current working directory, so launching Hestia from another folder silently produced a second empty database and an empty sandbox. All three are now anchored to the project folder. This predates Stage 5 but matters more now that the workspace root is a security boundary.
+- `chat.py`: the current date and time is injected as a system line every turn, the way memories are, rather than left to `get_current_time` — the known stale-time limitation came from the model reusing a time from its own earlier reply. Added a `tools` command printing the recent tool-call log, including denied and blocked requests, which closes the gap between the README's logging principle and anything actually being able to read the log.
+- `requirements.txt`: documents the Python 3.11+ floor (MCP 2.x needs it, and `tools.py` uses `BaseExceptionGroup`, a 3.11 builtin).
+- `personality.yaml`: tightened the question habit after five of five replies in a session ended with a question back to the user — most replies should now end without one. Also carried over earlier memory-discipline wording.
+
+**Verified here**
+- The sandbox, exercised directly against `_resolve`: `..` in several forms, absolute and UNC paths, alternate data streams, reserved device names, null bytes and nested traversal all refused, with ordinary paths unaffected. Backslash forms could only be checked under POSIX path semantics, where `\` is not a separator — those remain covered by the collaborator's Windows testing rather than reproduced here.
+- Argument validation runs before any prompt; a declined write is still recorded; an unlisted tool stays blocked.
+- An existing v0.4 database opened, migrated in place and kept its memories — now confirmed on the real database rather than claimed.
+- Five turns of ordinary conversation after the extraction fix wrote no new memories, closing the loop.
+
+**Known limitations, unchanged or new**
+- *Tag quality:* `_enrich_tags` still produces filler like `something`, `today` and `mentioned`, which will over-match once the store passes the always-inject threshold. Deliberately not fixed: Stage 9's embeddings remove tags from retrieval entirely, so the work would be thrown away. Keys were fixed instead, because retrieval quality cannot prevent two contradictory facts from being stored — that is a write-time problem, and semantic search arguably makes it worse by scoring near-identical contradictions equally.
+- *Overwrite flag:* unchanged — the model passes `overwrite: true` for new files, so the approval prompt, not the flag, is what protects a file.
+- *The `../` refusal has not been seen in a live session*, only against the resolver directly.
+- *File symlinks* still untested (creating one needs admin rights on Windows); junctions were tested by the collaborator and are resolved identically.
+
+---
+
 ## Stage 5 (v0.5) — Tool calling — ✅ Complete
 
 **Goal:** let Hestia act, not just talk — without the model ever running anything itself. The model can only *ask* for a tool; Hestia's own code decides whether it runs, runs it, and logs it.
