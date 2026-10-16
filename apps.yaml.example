@@ -1,0 +1,48 @@
+# Example launch allowlist. Copy to apps.yaml and fill in for your machine.
+#
+# apps.yaml itself is gitignored: it holds real install paths, which
+# usually contain a username. This example exists to document the format.
+#
+# This file is the entire allowlist. launch_application refuses anything
+# not listed, and never passes arguments to whatever it starts — so an
+# entry can open Notepad, but nothing can turn it into a way to run an
+# arbitrary command.
+#
+# Hestia cannot edit this file herself: write_file is confined to
+# workspace/ and this lives in the project root. Worth keeping that way.
+# If a UI ever manages this list, it should write here on your behalf,
+# never through a tool she can call.
+#
+# Each entry is  name: target , where target is one of:
+#   an executable on PATH     notepad.exe
+#   a URI protocol            'ms-settings:'
+#   a Steam game or Steam     'steam://rungameid/440'
+#   a full path to an .exe    'C:\Program Files\Brave\brave.exe'
+#   a full path to a .lnk     'C:\Users\you\AppData\...\Discord.lnk'
+#
+# Use SINGLE quotes around anything containing a colon or a backslash.
+# A bare  ms-settings:  reads as a nested key, and double quotes treat
+# backslashes as escapes, which mangles Windows paths.
+#
+# Names match loosely — case, spaces and punctuation are ignored — so
+# "VS Code", "vscode" and "vs-code" all reach the same entry.
+#
+# Run  python scripts/find_apps.py  to print ready-made lines for what is
+# actually installed, including Steam games. Pass a word to narrow it:
+#   python scripts/find_apps.py brave
+
+apps:
+  notepad: notepad.exe
+  calculator: calc.exe
+  file explorer: explorer.exe
+  settings: 'ms-settings:'
+  edge: 'microsoft-edge:'
+  clock: 'ms-clock:'
+
+  # Steam and Steam games are reached by protocol, not by path, so they
+  # work wherever the library lives:
+  # steam: 'steam://open/main'
+  # team fortress 2: 'steam://rungameid/440'
+
+  # Everything else: run find_apps.py and paste the lines you want.
+  # discord: 'C:\Users\you\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Discord.lnk'

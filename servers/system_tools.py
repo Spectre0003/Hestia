@@ -18,16 +18,55 @@ client on stdin; chat.py starts it itself.
 
 import os
 import platform
+import re
 import time
 from datetime import timedelta
 
 import psutil
+import yaml
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 # WARNING, not the default INFO: this process's stderr goes to a log file,
 # and per-request INFO lines would bury anything useful.
 server = MCPServer("system_tools", log_level="WARNING")
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APPS_PATH = os.path.join(_ROOT, "apps.yaml")
+
+
+def _normalise(name):
+    """Fold case, spaces and punctuation so 'VS Code' and 'vscode' match."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _load_apps():
+    """
+    Read the launch allowlist into {normalised: (display name, target)}.
+
+    Fails soft, unlike personality.yaml: a missing or malformed list
+    should cost one tool, not stop Hestia starting. launch_application
+    then refuses everything and says why.
+    """
+    try:
+        with open(APPS_PATH, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    apps = data.get("apps")
+    if not isinstance(apps, dict):
+        return {}
+    return {
+        _normalise(name): (str(name), str(target))
+        for name, target in apps.items()
+        if name and target
+    }
+
+
+# Read once at startup. Editing apps.yaml takes effect on the next run,
+# which also means the list can't change midway through a conversation.
+APPS = _load_apps()
+_APP_NAMES = sorted(display for display, _ in APPS.values())
 
 
 def _gb(n_bytes):
@@ -137,6 +176,47 @@ def list_processes(name_filter: str = "") -> str:
     if unreadable:
         lines.append(f"({unreadable} process(es) couldn't be read \u2014 normal for system processes.)")
     return "\n".join(lines)
+
+
+@server.tool(
+    description=(
+        "Open an application on this computer. The only applications that can be "
+        "opened are: " + ", ".join(_APP_NAMES) + ". Use the name as listed. If the "
+        "user asks for anything else, tell them it isn't on the list — there is no "
+        "other way to open a program."
+        if _APP_NAMES else
+        "Open an application on this computer. No applications are currently "
+        "configured, so this tool cannot open anything; say so if asked."
+    )
+)
+def launch_application(name: str) -> str:
+    """Open an application on this computer."""
+    if not APPS:
+        raise ToolError(
+            "No applications are configured in apps.yaml, so nothing can be opened."
+        )
+
+    entry = APPS.get(_normalise(name))
+    if entry is None:
+        raise ToolError(
+            f"'{name}' isn't on the list of applications that can be opened. "
+            f"The list is: {', '.join(_APP_NAMES)}."
+        )
+
+    display, target = entry
+    try:
+        # Windows handles .exe, .lnk and URI protocols alike here. The
+        # target comes from apps.yaml, never from the model, and nothing
+        # is appended to it — no arguments reach the launched program.
+        os.startfile(target)
+    except AttributeError:
+        raise ToolError("Opening applications is only supported on Windows.")
+    except OSError as e:
+        raise ToolError(
+            f"Couldn't open {display}: {e.strerror or e}. "
+            f"Its entry in apps.yaml may point somewhere that no longer exists."
+        )
+    return f"Opened {display}."
 
 
 if __name__ == "__main__":
