@@ -65,6 +65,9 @@ TOOL_TIERS = {
         "write_file": TIER_WRITE,
         "delete_file": TIER_WRITE,
     },
+    "system_tools": {
+        "get_system_info": TIER_READ,
+    },
 }
 
 # A user turn can't trigger more than this many rounds of tool calls
