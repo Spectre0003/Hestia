@@ -108,9 +108,14 @@ TOOL_GUIDANCE = (
     "If no tool does what was asked, say so plainly: never stand in a "
     "different tool and describe it as the thing they asked for. "
     "Report what a tool actually returned, not what you meant to "
-    "happen. For anything about a file's current contents or whether "
-    "it exists, call the tool again rather than trusting what you or "
-    "the conversation said earlier — the file may have changed."
+    "happen. For anything about the current state of a file or of this "
+    "computer, call the tool again rather than trusting what you or the "
+    "conversation said earlier — things change between turns. "
+    "A request to DO something is always a new request, even when you "
+    "did the same thing earlier in this conversation: the user may have "
+    "closed the app, deleted the file, or simply want it again. Never "
+    "treat an action as already handled because it appears earlier in "
+    "the conversation — run the tool again."
 )
 
 _loop = None      # event loop running on the background thread

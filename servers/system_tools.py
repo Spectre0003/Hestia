@@ -180,10 +180,12 @@ def list_processes(name_filter: str = "") -> str:
 
 @server.tool(
     description=(
-        "Open an application on this computer. The only applications that can be "
-        "opened are: " + ", ".join(_APP_NAMES) + ". Use the name as listed. If the "
-        "user asks for anything else, tell them it isn't on the list — there is no "
-        "other way to open a program."
+        "Open an application on this computer. The applications available are: "
+        + ", ".join(_APP_NAMES) + ". Names are matched loosely, so spacing, "
+        "capitalisation and punctuation do not matter — pass whatever the user "
+        "called it. If you are not sure whether something is available, call this "
+        "anyway: the result will say so and list what is. Do not refuse on your "
+        "own without calling it."
         if _APP_NAMES else
         "Open an application on this computer. No applications are currently "
         "configured, so this tool cannot open anything; say so if asked."
