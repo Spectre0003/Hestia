@@ -4,6 +4,47 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 6 (v0.6) — Computer interaction — ✅ Complete
+
+**Goal:** let Hestia read and act on the machine itself, not just a sandboxed folder. This is the first stage with no fence to hide behind — "open an app" has no workspace to be confined to — so the permission tiers built in Stage 5 become the only control.
+
+### 2026-10-16 — a second MCP server, three system tools, and a config-driven launch allowlist
+
+**Rejected a general `run_powershell` tool in favour of a fixed set of narrow ones.** A shell tool would have been far less work and is what "computer interaction" implies, but it collapses the design: one tier for every possible action, an approval prompt that asks the user to audit a command string, and a prompt injection that reaches arbitrary code rather than a named capability. Narrow tools mean an injection can only reach what was deliberately built. Shipped: `get_system_info`, `list_processes` (both tier 0) and `launch_application` (tier 1).
+
+**Added `servers/system_tools.py` as a second MCP server** rather than extending `hestia_core`. Partly separation of concerns — workspace files and the machine itself are different blast radii — and partly because `SERVERS` and the name-collision handling in `tools.start()` were written for multiple servers and had never run with more than one.
+
+**`get_system_info`** reports OS, CPU, memory, disk on the system drive, battery and uptime, via `psutil` (new dependency) rather than shelling out to `Get-CimInstance` — spawning PowerShell internally to read a battery level is not dangerous the way an exposed shell is, but it is worse on principle and messier to parse. Deliberately omits hostname and username: neither is needed to answer "how is my machine doing", and tool results are previewed into the `tool_calls` table. `cpu_percent` takes a 0.3s sample, because called without an interval it returns a meaningless 0.0 on first use.
+
+**`list_processes`** groups by program name before capping, rather than listing processes. A browser alone can be twenty processes; ungrouped it would fill the cap and say nothing. No PIDs — they would be noise while nothing can act on one; they earn their place if process management is ever added. `AccessDenied` is counted and reported rather than silently under-reporting, which matters on Windows where many system processes refuse to be read.
+
+**`launch_application` is scoped by an allowlist, because otherwise it quietly becomes the shell tool that was just rejected** — `powershell -c <anything>` is a valid application. The list lives in `apps.yaml`, read at startup, and the tool never forwards arguments to whatever it starts. Names match loosely (case, spacing and punctuation folded) so "VS Code", "vscode" and "vs-code" all resolve.
+- Config rather than a dict in code, so a future UI can manage the list by editing one file with no code change — and because editing YAML beats editing Python today. The split stays consistent with the rest: `TOOL_TIERS` decides in code *whether* the tool may run; `apps.yaml` is the user's own policy about their own machine, like `personality.yaml`.
+- A property worth keeping rather than rediscovering: `write_file` is confined to `workspace/` and `apps.yaml` sits in the project root, so Hestia structurally cannot add applications to her own allowlist. If a UI ever manages this list it should write there on the user's behalf, never through a tool she can call.
+- `apps.yaml` is gitignored (real install paths usually contain a username); `apps.yaml.example` documents the format.
+- Fails soft, unlike `personality.yaml`: a missing or malformed list costs one tool, not startup.
+
+**Steam needed a different mechanism entirely.** Steam games mostly create no Start Menu shortcut, and a hard-coded game path breaks when a library moves to another drive. `steam://rungameid/<appid>` URIs work wherever the game lives and `os.startfile` handles them like any other protocol. `scripts/find_apps.py` therefore has two passes: Start Menu `.lnk` files, and a Steam pass that locates Steam via the registry, reads `libraryfolders.vdf` for libraries on every drive, and parses `appmanifest_*.acf` for real appids. It only prints — nothing automatic should add to the allowlist, since that list is the fence.
+- YAML gotcha, hit twice while writing it: values containing a colon or backslash need **single** quotes. A bare `ms-settings:` parses as a nested key, and double quotes treat `\P` in `C:\Program Files` as an escape.
+
+**A false refusal, from asking the model to do a job the code already does.** With the allowlist keys edited to remove spaces, "launch wuthering waves" was refused with "not on the list of applications that can be opened" — and the tool was never called. Two causes, compounding: the tool description lists the key names verbatim, so the model compared "wuthering waves" against a list containing `wutheringwaves` and concluded it was absent; and the description explicitly told it to refuse anything not on the list. That made the model the gatekeeper, running a worse string match than `_normalise` does. The description now states that matching is loose and that it should call the tool rather than refuse on its own — the tool's own error lists the real names.
+
+**Server-failure behaviour, verified for the first time with two servers.** With `system_tools.py` renamed away, startup printed a problem line naming that server and pointing at `data/mcp_servers.log`, the five `hestia_core` tools still loaded, and chat carried on — the claim made in the Stage 5 notes, now actually exercised. Probing while degraded found something new: asked to open Notepad with no such tool present, Hestia offered to do it anyway. She did not substitute a different tool (that guidance held), but nothing said she could not claim a capability she lacked. Guidance now states that the offered tools are the only things she can do, that absent means absent, and that explaining how the user can do it themselves is fine while implying she will do it is not.
+
+**One pattern behind four separate bugs.** Across Stages 5 and 6: the clock reused from an earlier reply instead of called fresh; `read_file` never invoked because the content was already in the conversation; a deletion reported that was really an empty overwrite; and an app refused that was on the list all along. Each looks like a different quirk and each has the same shape — the design left a decision to the model that the code could have made, and a 7B model eventually decided it wrong. Every fix moved the decision back into code and told the model to call rather than conclude: tiers in `TOOL_TIERS`, paths through `_resolve`, names through `_normalise`, the clock injected every turn rather than fetched. Worth applying as a design rule in later stages rather than rediscovering it a fifth time.
+
+**Deferred `.env`/secrets to Stage 8.** The roadmap put it here, but nothing in this stage holds a secret, and building the abstraction before there is anything to put in it invites getting it wrong. Moved to the stage that introduces the first API key; README updated to match.
+
+**Known limitations**
+- *Launches are fire-and-forget:* `os.startfile` returns as soon as the target is handed to the shell, so "Opened X" means the launch was accepted, not that the program started. A `.lnk` pointing at something removed raises an error; a launcher that fails silently afterwards does not.
+- *The allowlist is read once at startup*, so editing `apps.yaml` needs a restart. Deliberate — the list cannot change midway through a conversation.
+- *Launcher games open launchers:* Valorant and Wuthering Waves both route through their own launchers, which is their behaviour, not something fixable here.
+- *The missing-capability guidance is only observable in degraded mode*, so it has not been re-tested since the server was restored.
+
+**Stage 6 (v0.6) milestone met:** Hestia can report on the machine, list what is running, and open a bounded set of applications — through named tools with their own tiers, with every call logged, and with no path to running an arbitrary command.
+
+---
+
 ## Stage 5 follow-up (v0.5) — first run on this machine, a memory feedback loop, and a round of hardening
 
 ### 2026-10-12 — dependency gap, self-referential memory, eight fixes, and a delete tool
