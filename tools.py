@@ -51,6 +51,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # each one in the same Python environment as Hestia itself.
 SERVERS = {
     "hestia_core": [sys.executable, os.path.join(_HERE, "servers", "hestia_core.py")],
+    "system_tools": [sys.executable, os.path.join(_HERE, "servers", "system_tools.py")],
 }
 
 # The one place a tool's tier is decided. Keyed by server as well as tool
