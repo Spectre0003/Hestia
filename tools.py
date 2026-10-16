@@ -67,6 +67,7 @@ TOOL_TIERS = {
     },
     "system_tools": {
         "get_system_info": TIER_READ,
+        "list_processes": TIER_READ,
     },
 }
 

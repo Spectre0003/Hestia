@@ -31,7 +31,15 @@ server = MCPServer("system_tools", log_level="WARNING")
 
 
 def _gb(n_bytes):
+    """For system totals, which are always gigabyte-scale."""
     return f"{n_bytes / 1_073_741_824:.1f} GB"
+
+
+def _size(n_bytes):
+    """Adaptive, for per-process figures: most are megabytes, a few aren't."""
+    if n_bytes >= 1_073_741_824:
+        return f"{n_bytes / 1_073_741_824:.1f} GB"
+    return f"{n_bytes / 1_048_576:.0f} MB"
 
 
 @server.tool()
@@ -75,6 +83,59 @@ def get_system_info() -> str:
     uptime = timedelta(seconds=int(time.time() - psutil.boot_time()))
     lines.append(f"Running since last boot: {uptime}")
 
+    return "\n".join(lines)
+
+
+# Processes are grouped by name before being capped: a browser alone can
+# account for twenty entries, which would crowd out everything else and
+# tell the user nothing they didn't know.
+MAX_PROCESS_GROUPS = 25
+
+
+@server.tool()
+def list_processes(name_filter: str = "") -> str:
+    """List programs currently running on this computer, grouped by name and ordered by how much memory they are using. Use this when the user asks what is running, what is using their memory, or whether a particular program is open. Pass name_filter to look for one program, e.g. 'chrome'."""
+    wanted = (name_filter or "").strip().lower()
+
+    groups = {}
+    unreadable = 0
+    for process in psutil.process_iter(["name", "memory_info"]):
+        try:
+            name = process.info["name"] or "(unknown)"
+            memory = process.info["memory_info"]
+            rss = memory.rss if memory else 0
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Normal on Windows: plenty of system processes refuse to be read.
+            unreadable += 1
+            continue
+        if wanted and wanted not in name.lower():
+            continue
+        count, total = groups.get(name, (0, 0))
+        groups[name] = (count + 1, total + rss)
+
+    if not groups:
+        if wanted:
+            return f"Nothing matching '{name_filter}' is running."
+        return "No processes could be read."
+
+    ordered = sorted(groups.items(), key=lambda item: item[1][1], reverse=True)
+    shown = ordered[:MAX_PROCESS_GROUPS]
+    width = max(len(name) for name, _ in shown)
+
+    total_processes = sum(count for _, (count, _) in ordered)
+    if wanted:
+        header = f"Matching '{name_filter}': {total_processes} process(es) in {len(ordered)} program(s)."
+    else:
+        header = f"{total_processes} processes running, in {len(ordered)} programs, by memory use:"
+
+    lines = [header]
+    for name, (count, total) in shown:
+        plural = "process" if count == 1 else "processes"
+        lines.append(f"  {name:<{width}}  {_size(total):>9}  ({count} {plural})")
+    if len(ordered) > len(shown):
+        lines.append(f"  ...and {len(ordered) - len(shown)} more programs")
+    if unreadable:
+        lines.append(f"({unreadable} process(es) couldn't be read \u2014 normal for system processes.)")
     return "\n".join(lines)
 
 
