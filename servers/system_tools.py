@@ -114,7 +114,7 @@ def _wsl_status():
 
 @server.tool()
 def get_system_info() -> str:
-    """Get information about this computer: operating system, CPU, memory use, disk space on the system drive, battery level, and how long it has been running. Use this when the user asks how their machine is doing, whether it is low on memory or disk space, or what it is running."""
+    """Get information about this computer: operating system, CPU, memory use, disk space on the system drive, battery level, how long it has been running, and whether WSL (Windows Subsystem for Linux) is installed, with its Linux distributions. Use this when the user asks how their machine is doing, whether it is low on memory or disk space, what it is running, or whether WSL is set up."""
     lines = [
         f"OS: {platform.system()} {platform.release()} ({platform.version()})",
         f"CPU: {psutil.cpu_count(logical=False) or '?'} physical cores, "

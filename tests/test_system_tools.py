@@ -30,6 +30,10 @@ class WslSummaryTest(unittest.TestCase):
     def test_wsl_exe_missing(self):
         self.assertEqual(system_tools._wsl_summary(None), "WSL: not available")
 
+    def test_description_tells_the_model_wsl_is_covered(self):
+        # Without this, "is WSL set up?" got no tool call 3 times out of 3.
+        self.assertIn("WSL", system_tools.get_system_info.__doc__)
+
     def test_system_info_includes_a_wsl_line(self):
         self.assertIn("WSL: ", system_tools.get_system_info())
 
