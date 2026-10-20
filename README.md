@@ -29,8 +29,8 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | 4 | v0.4 | Long-term memory (no vectors yet) | SQLite tables, tag-based retrieval | ✅ Complete |
 | 5 | v0.5 | Tool calling | MCP (Python SDK), logging, permission tiers | ✅ Complete |
 | 6 | v0.6 | Computer interaction | psutil, second MCP server, app allowlist | ✅ Complete |
-| 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | 🚧 Built — Docker check pending |
-| 8 | v0.8 | Internet tools | Web search/API MCP servers, sandboxed tier, `.env`/secrets | Not started |
+| 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | ✅ Complete |
+| 8 | v0.8 | Internet tools | Web search/API MCP servers, sandboxed tier, `.env`/secrets | ⏭️ Up next |
 | 9 | v0.9 | Advanced memory | Local embeddings, vector store, RAG | Not started |
 | 10 | v1.0 | Actual assistant | Voice (whisper.cpp, Kokoro/XTTS), GUI, background service | Not started |
 

@@ -4,7 +4,7 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
-## Stage 7 (v0.7) — Dev environment integration — 🚧 Built, Docker check pending
+## Stage 7 (v0.7) — Dev environment integration — ✅ Complete
 
 **Goal:** let Hestia help with development work — repo status, diffs, commits, opening a project in VS Code, containers, WSL — without any of those becoming a way to run arbitrary commands. All four tools are command runners in disguise: a repo's own config can make `git status` execute a program, `docker run` and `wsl <cmd>` are shells, and VS Code can run a folder's tasks. So the Stage 6 rule carries straight over: narrow tools, fixed subcommands, decisions in code.
 
@@ -27,11 +27,13 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 **Tool choice with 15 tools.** 14 prompts × 3 tries, first tool called: 33/42 (78%). The one real miss — "is WSL set up?" never called anything — was a description that didn't mention WSL; fixed, 36/42 (85%). The two remaining misses are not regressions: "open notepad" correctly declined because this machine has no `apps.yaml`, and "what's changed in my repo?" went to `git_diff` (3/3), which answers it. A chat now starts at ~2,934 of 8,192 tokens.
 
-**Tests.** The project's first automated suite: `venv\Scripts\python -m unittest discover -s tests` — 38 tests against throwaway repos, never the real database or `repos.yaml`. The real-Docker test skips itself until Docker Desktop is installed and running.
+**Tests.** The project's first automated suite: `venv\Scripts\python -m unittest discover -s tests` — 38 tests against throwaway repos, never the real database or `repos.yaml`. A real-Docker test (create, list, start, stop, clean up a `hello-world` container) skips itself when Docker isn't running.
 
 **Verified live** with the real model: status, diff, an approved commit (authored as the user, only the named file), a refused commit (nothing changed), VS Code opening and staying open, an unlisted repo refused with the real list, a missing Docker explained, and WSL reported as "installed, no Linux distributions".
 
-**Still to do before this is ✅:** install Docker Desktop (with WSL2 and a Linux distro), re-run the suite so the real-Docker test runs, and live-check `list_containers` / `start_container` / `stop_container`.
+**Docker, once installed** (Docker Desktop 4.95.0 via winget, WSL2 backend; it brings its own `docker-desktop` WSL distro, and Ubuntu was added alongside): all 38 tests pass with none skipped, and a live session listed a container, started and stopped it after approval (Docker's own record agreed), refused an unknown name with the real list, and reported both WSL distros. One rough edge, left as is: for a container that doesn't exist, the approval prompt comes before the tool finds that out — approving it runs nothing, but it asks a question that didn't need asking.
+
+**Stage 7 (v0.7) milestone met:** Hestia can report on and commit to repos the user listed, open them in VS Code, see and start or stop existing containers, and report WSL — through narrow tools with their own tiers, every call logged, and no path to running an arbitrary command.
 
 ---
 
