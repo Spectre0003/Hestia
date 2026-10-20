@@ -1,5 +1,5 @@
 """
-Hestia — Stage 5 (v0.5): Tool calling
+Hestia — Stage 7 (v0.7): Dev environment integration
 
 A command-line chat loop that talks to a local model running in Ollama,
 with a persona loaded from personality.yaml, conversation history
@@ -265,7 +265,7 @@ def main():
     history = start_history(persona, conn, session_id)
     ask_tool_permission = functools.partial(confirm_tool, persona["name"])
 
-    print(f"{persona['name']} v0.5 — talking to {MODEL_NAME}.")
+    print(f"{persona['name']} v0.7 — talking to {MODEL_NAME}.")
     print(f"Tools: {', '.join(tools.available_tools()) or 'none'}")
     print("Commands: 'exit'/'quit' to leave, 'new' for a fresh session,")
     print("          'remember ...' to save a fact, 'forget ...' to remove one,")

@@ -4,6 +4,37 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 7 (v0.7) — Dev environment integration — 🚧 Built, Docker check pending
+
+**Goal:** let Hestia help with development work — repo status, diffs, commits, opening a project in VS Code, containers, WSL — without any of those becoming a way to run arbitrary commands. All four tools are command runners in disguise: a repo's own config can make `git status` execute a program, `docker run` and `wsl <cmd>` are shells, and VS Code can run a folder's tasks. So the Stage 6 rule carries straight over: narrow tools, fixed subcommands, decisions in code.
+
+### 2026-10-20 — a third MCP server, a repo allowlist, an 8k context window, and a launcher that survives Hestia exiting
+
+**Context window first.** At eight tools a chat already started at 2,276 of 4,096 tokens (55%) before the user typed; seven more tools would leave about 1,200 for history, memories and a tool result, and one `git_diff` can fill that alone. Moved to 8,192 as a model *variant* (`qwen2.5-7b-8k`) created at startup, not a per-call `num_ctx`: `memory.py` makes two calls that don't pass it, and every switch of context size makes Ollama reload the model (measured 4.3 s each time). The variant takes 0.1 s to create, copies nothing, runs 100% on the GPU at 5.1 GB, and the second reply showed no reload.
+
+**`servers/dev_tools.py`, scoped by `repos.yaml`.** Same shape as `system_tools`: an allowlist file read once at startup (gitignored, `repos.yaml.example` documents it), loose name matching, tool descriptions that list the real names and tell the model to call rather than refuse on its own. Hestia can't edit the list — `write_file` is confined to `workspace/`.
+- `git_status` (branch, changes, last five commits) and `git_diff` (staged and not) — tier 0.
+- `git_commit(repo, files, message)` — tier 1. Stages only the named files and commits only them (`git commit -- <paths>`), so anything else the user had staged stays out. Paths must resolve inside the repo and outside `.git`; `.` is refused, because committing "." would sweep in everything. A file literally named `--amend` is still a file (`--` before paths). Commits are authored by the repo's own git identity — confirmed it resolves under the ~12-variable environment the MCP client gives servers.
+- `open_in_vscode(repo)` — tier 1. Starts `Code.exe` directly, never the `code.cmd` wrapper: passing arguments through a Windows batch file is a known injection class.
+- `list_containers` (tier 0), `start_container` / `stop_container` (tier 1) — existing containers only, named from Docker's own list, never from the model. No `run`, `exec` or `rm`. "Docker isn't installed" and "Docker Desktop isn't running" are clear messages, not tracebacks.
+- WSL is one line in `get_system_info` rather than a tool of its own (`wsl -l -v`, which writes UTF-16 and doesn't start the VM).
+- Left out on purpose: `git push`, `git clone`, the GitHub CLI (internet — Stage 8), and anything that runs commands inside a container or WSL.
+
+**Every git call is locked down,** not just the ones that look risky. Verified first that the threat is real: a repo whose `.git/config` sets `core.fsmonitor` to a script makes plain `git status` run it. Every call forces `core.fsmonitor=false`, `--no-pager`, no terminal prompts, no optional locks, a timeout, and diffs add `--no-ext-diff --no-textconv` so a repo's diff drivers can't run either. There's a test that plants the hook and checks it fires for plain git and not for Hestia.
+
+**A launch that reported success and did nothing.** In the live check, "open the sandbox repo in VS Code" was approved, the tool said "Opened", and no VS Code was running afterwards. Launched the same way from an ordinary process, it worked. Root cause was in the MCP SDK, not the tool: on Windows it puts every server in a job object with `KILL_ON_JOB_CLOSE` (`mcp/os/win32/utilities.py`), so anything a server starts is killed the moment Hestia exits. Reproduced in a simulated job: a direct launch left nothing running; a `vscode://` link via Explorer survived but didn't open the folder; WMI `Win32_Process.Create` survived, opened the folder with no extra prompt, and — because WMI builds the process itself — gave it the user's full environment (47–66 variables) instead of the server's 12. That made an earlier `CreateEnvironmentBlock` workaround for the environment unnecessary, so it was deleted. A test now reproduces the real conditions (job, stripped environment, worker thread) with a harmless sleeper process, and VS Code was confirmed still open 10 s after Hestia exited.
+- *Same bug, not fixed here:* `launch_application` uses `os.startfile` from inside the same job. Tested: Store apps such as Notepad survive (Windows brokers them), but classic programs such as `charmap.exe` are killed when Hestia exits — which likely covers most `.exe` and `.lnk` entries in `apps.yaml`. `dev_tools._launch` is the fix to reuse.
+
+**Tool choice with 15 tools.** 14 prompts × 3 tries, first tool called: 33/42 (78%). The one real miss — "is WSL set up?" never called anything — was a description that didn't mention WSL; fixed, 36/42 (85%). The two remaining misses are not regressions: "open notepad" correctly declined because this machine has no `apps.yaml`, and "what's changed in my repo?" went to `git_diff` (3/3), which answers it. A chat now starts at ~2,934 of 8,192 tokens.
+
+**Tests.** The project's first automated suite: `venv\Scripts\python -m unittest discover -s tests` — 37 tests against throwaway repos, never the real database or `repos.yaml`. The real-Docker test skips itself until Docker Desktop is installed and running.
+
+**Verified live** with the real model: status, diff, an approved commit (authored as the user, only the named file), a refused commit (nothing changed), VS Code opening and staying open, an unlisted repo refused with the real list, a missing Docker explained, and WSL reported as "installed, no Linux distributions".
+
+**Still to do before this is ✅:** install Docker Desktop (with WSL2 and a Linux distro), re-run the suite so the real-Docker test runs, and live-check `list_containers` / `start_container` / `stop_container`.
+
+---
+
 ## Stage 6 (v0.6) — Computer interaction — ✅ Complete
 
 **Goal:** let Hestia read and act on the machine itself, not just a sandboxed folder. This is the first stage with no fence to hide behind — "open an app" has no workspace to be confined to — so the permission tiers built in Stage 5 become the only control.
