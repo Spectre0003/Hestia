@@ -93,7 +93,9 @@ def _repo(name):
 
 def _git(folder, *args):
     """Run one fixed git command in a listed repo. Returns (exit code, stdout, stderr)."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    # GIT_LITERAL_PATHSPECS: a path is a path. Otherwise '*' or ':(glob)...'
+    # from the model would commit every matching file, not the named one.
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_LITERAL_PATHSPECS="1")
     try:
         done = subprocess.run(
             ["git", *_SAFE_GIT, "-C", folder, *args],

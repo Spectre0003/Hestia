@@ -124,6 +124,17 @@ class GitCommitTest(unittest.TestCase):
         self.assertEqual(self.commit_count(), 2)
         self.assertEqual(self.files_in_last_commit(), ["--amend"])
 
+    def test_wildcards_and_pathspec_magic_are_not_expanded(self):
+        # git treats '*' and ':(glob)...' as patterns; either would commit
+        # every matching file, not the "named" one.
+        write(self.repo, "a.txt", "a\n")
+        write(self.repo, "b.txt", "b\n")
+        for pattern in ("*", "*.txt", ":(glob)*.txt"):
+            with self.subTest(pattern=pattern), self.assertRaises(ToolError):
+                dev_tools.git_commit("hestia", [pattern], "Sweep everything")
+        self.assertEqual(self.commit_count(), 1)
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").split(), [])
+
     def test_nothing_to_commit_is_said_plainly(self):
         with self.assertRaises(ToolError) as caught:
             dev_tools.git_commit("hestia", ["readme.txt"], "No change")
