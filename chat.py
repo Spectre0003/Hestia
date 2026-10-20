@@ -21,13 +21,19 @@ import argparse
 import functools
 from datetime import datetime
 import yaml
-from ollama import chat
+from ollama import chat, create
 
 import storage
 import memory
 import tools
 
-MODEL_NAME = "qwen2.5:7b"
+BASE_MODEL = "qwen2.5:7b"
+NUM_CTX = 8192
+# Hestia's own name for the base model with a bigger context window built
+# in. Built in rather than passed per call: a call that left num_ctx out
+# (memory.py makes two) would make Ollama reload the model, ~4 s each time.
+# 4,096 was already 55% used before the user typed, at eight tools.
+MODEL_NAME = "qwen2.5-7b-8k"
 PERSONALITY_PATH = "personality.yaml"
 
 # How much of each argument the tool-approval prompt shows.
@@ -233,6 +239,15 @@ def main():
     args = parser.parse_args()
 
     persona = load_personality()
+
+    try:
+        # ~0.1 s, copies nothing, and is a no-op once the variant exists.
+        create(model=MODEL_NAME, from_=BASE_MODEL, parameters={"num_ctx": NUM_CTX})
+    except Exception as e:
+        print(f"[Error: couldn't set up '{MODEL_NAME}' from '{BASE_MODEL}': {e}]")
+        print(f"Is Ollama running, and has '{BASE_MODEL}' been pulled ('ollama pull {BASE_MODEL}')?")
+        sys.exit(1)
+
     conn = storage.get_connection()
 
     # A tool server that won't start costs its tools, not the chat.
