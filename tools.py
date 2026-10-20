@@ -74,6 +74,7 @@ TOOL_TIERS = {
     "dev_tools": {
         "git_status": TIER_READ,
         "git_diff": TIER_READ,
+        "git_commit": TIER_WRITE,
     },
 }
 

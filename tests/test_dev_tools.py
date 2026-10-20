@@ -78,7 +78,71 @@ class GitDiffTest(unittest.TestCase):
         self.assertIn("No changes", dev_tools.git_diff("hestia"))
 
 
+class GitCommitTest(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_repo(self)
+        use_repos(self, dev_tools, hestia=self.repo)
+
+    def commit_count(self):
+        return int(git(self.repo, "rev-list", "--count", "HEAD").strip())
+
+    def files_in_last_commit(self):
+        return git(self.repo, "show", "--name-only", "--format=", "HEAD").split()
+
+    def test_commits_the_named_file_with_the_exact_message(self):
+        write(self.repo, "notes.txt", "remember milk\n")
+        result = dev_tools.git_commit("hestia", ["notes.txt"], "Add notes")
+        self.assertIn("Committed", result)
+        self.assertEqual(self.files_in_last_commit(), ["notes.txt"])
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%B").strip(), "Add notes")
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%an").strip(), "Test User")
+
+    def test_commit_only_includes_named_files(self):
+        write(self.repo, "other.txt", "staged by the user\n")
+        git(self.repo, "add", "other.txt")
+        write(self.repo, "notes.txt", "notes\n")
+        dev_tools.git_commit("hestia", ["notes.txt"], "Add notes")
+        self.assertEqual(self.files_in_last_commit(), ["notes.txt"])
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").split(), ["other.txt"])
+
+    def test_files_in_subfolders(self):
+        write(self.repo, "docs/plan.md", "plan\n")
+        dev_tools.git_commit("hestia", ["docs/plan.md"], "Add plan")
+        self.assertEqual(self.files_in_last_commit(), ["docs/plan.md"])
+
+    def test_commit_refuses_paths_outside_repo(self):
+        outside = write(support.temp_folder(self), "x.txt", "x\n")
+        for bad in ("../x.txt", outside, ".git/config", ".", ""):
+            with self.subTest(path=bad), self.assertRaises(ToolError):
+                dev_tools.git_commit("hestia", [bad], "Sneaky")
+        self.assertEqual(self.commit_count(), 1)
+
+    def test_commit_treats_option_like_names_as_paths(self):
+        write(self.repo, "--amend", "odd name\n")
+        dev_tools.git_commit("hestia", ["--amend"], "Add oddly named file")
+        self.assertEqual(self.commit_count(), 2)
+        self.assertEqual(self.files_in_last_commit(), ["--amend"])
+
+    def test_nothing_to_commit_is_said_plainly(self):
+        with self.assertRaises(ToolError) as caught:
+            dev_tools.git_commit("hestia", ["readme.txt"], "No change")
+        self.assertIn("Nothing to commit", str(caught.exception))
+        self.assertEqual(self.commit_count(), 1)
+
+    def test_needs_a_message_and_files(self):
+        write(self.repo, "notes.txt", "notes\n")
+        with self.assertRaises(ToolError):
+            dev_tools.git_commit("hestia", ["notes.txt"], "   ")
+        with self.assertRaises(ToolError):
+            dev_tools.git_commit("hestia", [], "Add notes")
+        self.assertEqual(self.commit_count(), 1)
+
+
 class RegistrationTest(unittest.TestCase):
+    def test_git_commit_is_write_tier(self):
+        import tools
+        self.assertEqual(tools.TOOL_TIERS["dev_tools"]["git_commit"], tools.TIER_WRITE)
+
     def test_git_read_tools_are_read_tier(self):
         import tools
         self.assertEqual(tools.TOOL_TIERS["dev_tools"]["git_status"], tools.TIER_READ)

@@ -150,5 +150,62 @@ def git_diff(repo: str) -> str:
     return "\n\n".join(parts)
 
 
+def _path_in_repo(folder, path):
+    """
+    A file path from the model, as a path relative to the repo — or None
+    if it resolves outside the repo, into .git, or to the repo itself
+    (committing '.' would sweep in everything, not just named files).
+    """
+    if not (path or "").strip():
+        return None
+    full = os.path.realpath(os.path.join(folder, path))
+    try:
+        inside = os.path.normcase(os.path.commonpath([full, folder])) == os.path.normcase(folder)
+    except ValueError:  # a different drive entirely
+        return None
+    relative = os.path.relpath(full, folder)
+    first = relative.split(os.sep)[0]
+    if not inside or relative == "." or os.path.normcase(first) == ".git":
+        return None
+    return relative
+
+
+@server.tool(description=(
+    "Commit changes in a git repository. Pass the files to include, as "
+    "paths inside the repository (e.g. 'notes.txt' or 'docs/plan.md'), "
+    "and a commit message. Only the named files are committed — nothing "
+    "else that happens to be staged. The user approves every commit "
+    "before it happens. Nothing is pushed. " + _REPO_HINT
+))
+def git_commit(repo: str, files: list[str], message: str) -> str:
+    display, folder = _repo(repo)
+    message = (message or "").strip()
+    if not message:
+        raise ToolError("A commit needs a message; nothing was committed.")
+    if not files:
+        raise ToolError("Name the files to commit; nothing was committed.")
+
+    paths = []
+    for path in files:
+        relative = _path_in_repo(folder, path)
+        if relative is None:
+            raise ToolError(f"'{path}' isn't a file inside {display}, so nothing was committed.")
+        paths.append(relative)
+
+    # "--" so a file named like an option ("--amend") is still a file.
+    code, out, err = _git(folder, "add", "--", *paths)
+    if code != 0:
+        raise ToolError(err or out or "git add failed; nothing was committed.")
+    # Pathspecs on commit mean "only these": anything else the user had
+    # staged stays staged and out of this commit.
+    code, out, err = _git(folder, "commit", "-m", message, "--", *paths)
+    if code != 0:
+        if "nothing" in out.lower() or "no changes" in out.lower():
+            raise ToolError(f"Nothing to commit: {', '.join(paths)} has no changes in {display}.")
+        raise ToolError(err or out or "git commit failed.")
+    _, short, _ = _git(folder, "log", "-1", "--format=%h")
+    return f"Committed {short} in {display}: {message.splitlines()[0]} ({len(paths)} file(s)). Not pushed."
+
+
 if __name__ == "__main__":
     server.run()  # stdio transport by default
