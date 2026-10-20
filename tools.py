@@ -52,6 +52,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 SERVERS = {
     "hestia_core": [sys.executable, os.path.join(_HERE, "servers", "hestia_core.py")],
     "system_tools": [sys.executable, os.path.join(_HERE, "servers", "system_tools.py")],
+    "dev_tools": [sys.executable, os.path.join(_HERE, "servers", "dev_tools.py")],
 }
 
 # The one place a tool's tier is decided. Keyed by server as well as tool
@@ -69,6 +70,10 @@ TOOL_TIERS = {
         "get_system_info": TIER_READ,
         "list_processes": TIER_READ,
         "launch_application": TIER_WRITE,
+    },
+    "dev_tools": {
+        "git_status": TIER_READ,
+        "git_diff": TIER_READ,
     },
 }
 

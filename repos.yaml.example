@@ -1,0 +1,20 @@
+# Example repo allowlist. Copy to repos.yaml and list your own repos.
+#
+# repos.yaml itself is gitignored: it holds real folder paths, which
+# usually contain a username. This example only documents the format.
+#
+# Every git and VS Code tool refuses any repo not listed here. That
+# matters beyond tidiness: a repo's own settings can make git run
+# programs, so Hestia only ever touches repos you chose.
+#
+# Hestia cannot edit this file herself: write_file is confined to
+# workspace/ and this lives in the project root. Keep it that way.
+#
+# Each entry is  name: folder . Names match loosely — case, spaces and
+# punctuation are ignored. Use SINGLE quotes around Windows paths;
+# double quotes treat backslashes as escapes. Entries that aren't git
+# repos are skipped. Restart Hestia after editing.
+
+repos:
+  hestia: 'C:\Users\you\Documents\GitHub\Hestia'
+  # notes: 'C:\Users\you\Documents\notes'

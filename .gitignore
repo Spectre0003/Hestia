@@ -18,6 +18,10 @@ workspace/
 # often a username inside them. apps.yaml.example shows the format.
 apps.yaml
 
+# The repo allowlist (from Stage 7 onward): real folder paths, for the
+# same reason. repos.yaml.example shows the format.
+repos.yaml
+
 # OS/editor cruft
 .vscode/
 .idea/
