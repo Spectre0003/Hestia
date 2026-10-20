@@ -5,6 +5,9 @@ pyyaml>=6.0
 # System info and process listing (Stage 6). Avoids shelling out to
 # PowerShell internally just to read memory, battery and processes.
 psutil>=5.9
+# Starts programs via WMI so they outlive Hestia (Stage 7); mcp also pulls
+# it in on Windows, but dev_tools uses it directly.
+pywin32>=306; sys_platform == "win32"
 # Pinned exactly: the MCP SDK's 1.x -> 2.x jump renamed core APIs
 # (FastMCP -> MCPServer, camelCase -> snake_case fields).
 mcp==2.2.0

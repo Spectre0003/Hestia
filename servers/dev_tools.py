@@ -16,13 +16,13 @@ As with the other servers, whether a tool may run at all is decided in
 tools.py (TOOL_TIERS), never here.
 """
 
-import ctypes
-import ctypes.wintypes as wintypes
 import os
 import re
 import shutil
 import subprocess
 
+import pythoncom
+import win32com.client
 import yaml
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -225,53 +225,25 @@ def _code_exe():
     return next((path for path in candidates if os.path.isfile(path)), None)
 
 
-def _user_environment():
-    """
-    The user's normal login environment, as Windows builds it for a Start
-    Menu launch. This server only gets ~12 variables from the MCP client,
-    and VS Code's terminals would inherit that stripped set (no ComSpec,
-    windir, ProgramFiles...) if it were passed on. Falls back to this
-    process's environment if Windows won't build one.
-    """
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    userenv = ctypes.WinDLL("userenv", use_last_error=True)
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-    userenv.CreateEnvironmentBlock.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
-    userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
-
-    token, block = wintypes.HANDLE(), ctypes.c_void_p()
-    TOKEN_QUERY = 0x0008
-    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
-        return dict(os.environ)
-    try:
-        if not userenv.CreateEnvironmentBlock(ctypes.byref(block), token, False):
-            return dict(os.environ)
-        try:
-            env, address = {}, block.value
-            while True:  # "NAME=value\0NAME=value\0...\0\0", UTF-16
-                entry = ctypes.wstring_at(address)
-                if not entry:
-                    return env
-                name, _, value = entry.partition("=")
-                if name:
-                    env[name] = value
-                address += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
-        finally:
-            userenv.DestroyEnvironmentBlock(block)
-    finally:
-        kernel32.CloseHandle(token)
-
-
 def _launch(argv):
-    """Start a program detached from this server, with the user's own environment."""
-    subprocess.Popen(
-        argv, env=_user_environment(), close_fds=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-    )
+    """
+    Start a program so it outlives this server. The MCP client runs each
+    server inside a Windows job that kills everything in it when Hestia
+    exits, so an ordinary child process (subprocess, os.startfile) would
+    die with it. WMI creates the process itself, outside that job, and
+    with the user's normal environment rather than the ~12 variables this
+    server was given. COM is set up per call: tools run on worker threads.
+    """
+    pythoncom.CoInitialize()
+    try:
+        processes = win32com.client.GetObject("winmgmts:").Get("Win32_Process")
+        params = processes.Methods_("Create").InParameters.SpawnInstance_()
+        params.CommandLine = subprocess.list2cmdline(argv)
+        result = processes.ExecMethod_("Create", params)
+    finally:
+        pythoncom.CoUninitialize()
+    if result.ReturnValue != 0:
+        raise ToolError(f"Windows refused to start it (WMI error {result.ReturnValue}).")
 
 
 @server.tool(description=(

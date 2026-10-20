@@ -183,13 +183,53 @@ class OpenInVSCodeTest(unittest.TestCase):
                 dev_tools.open_in_vscode("hestia")
         self.assertIn("VS Code", str(caught.exception))
 
-    def test_launch_environment_is_the_users_full_one(self):
-        # The server itself only gets ~12 variables from the MCP client;
-        # VS Code's terminals would inherit that if it were passed on.
-        env = dev_tools._user_environment()
-        names = {name.lower() for name in env}
-        for needed in ("comspec", "windir", "programfiles", "path", "userprofile"):
-            self.assertIn(needed, names)
+
+# Reproduces how a tool server really runs: inside a Windows job that kills
+# everything in it when it closes (the MCP client's), with only the ~12
+# environment variables the client passes, calling tools from a worker
+# thread. It launches a harmless sleeper, then closes the job — which
+# kills the helper itself — and reports nothing; the test checks the sleeper.
+_LAUNCH_HELPER = r'''
+import os, sys, threading, time
+import win32api, win32job
+repo, report = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(repo, "servers"))
+job = win32job.CreateJobObject(None, "")
+info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+win32job.AssignProcessToJobObject(job, win32api.GetCurrentProcess())
+import dev_tools
+sleeper = ("import os, sys, time; "
+           "open(sys.argv[1], 'w').write(f'{os.getpid()} {int(\"ComSpec\" in os.environ)}'); "
+           "time.sleep(60)")
+worker = threading.Thread(target=dev_tools._launch, args=([sys.executable, "-c", sleeper, report],))
+worker.start(); worker.join()
+time.sleep(4)  # let the sleeper start, so a kill below would actually land on it
+win32api.CloseHandle(job)
+'''
+
+
+class LaunchTest(unittest.TestCase):
+    def test_launched_program_outlives_the_server_and_gets_the_users_environment(self):
+        import psutil
+        folder = support.temp_folder(self)
+        helper = write(folder, "helper.py", _LAUNCH_HELPER)
+        report = os.path.join(folder, "report.txt")
+        keep = ("APPDATA", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT",
+                "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERNAME", "USERPROFILE")
+        stripped = {k: os.environ[k] for k in keep if k in os.environ}
+        support.subprocess.run([support.sys.executable, helper, support.REPO, report],
+                               env=stripped, timeout=60, capture_output=True)
+        for _ in range(20):
+            if os.path.exists(report) and os.path.getsize(report):
+                break
+            support.time.sleep(0.5)
+        self.assertTrue(os.path.exists(report), "the launched program never started")
+        pid, has_comspec = map(int, open(report).read().split())
+        self.addCleanup(lambda: psutil.pid_exists(pid) and psutil.Process(pid).kill())
+        self.assertTrue(psutil.pid_exists(pid), "the launched program died with the server's job")
+        self.assertEqual(has_comspec, 1, "the launched program got the server's stripped environment")
 
 
 def _completed(code=0, out=b"", err=b""):
