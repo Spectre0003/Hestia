@@ -192,7 +192,82 @@ class OpenInVSCodeTest(unittest.TestCase):
             self.assertIn(needed, names)
 
 
+def _completed(code=0, out=b"", err=b""):
+    return support.subprocess.CompletedProcess([], code, out, err)
+
+
+class DockerErrorsTest(unittest.TestCase):
+    def test_docker_not_installed_message(self):
+        with mock.patch.object(dev_tools.subprocess, "run", side_effect=FileNotFoundError):
+            with self.assertRaises(ToolError) as caught:
+                dev_tools.list_containers()
+        self.assertIn("isn't installed", str(caught.exception))
+
+    def test_docker_not_running_message(self):
+        down = _completed(1, err=b"error during connect: Get \"http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.47/containers/json\": "
+                                 b"open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.")
+        with mock.patch.object(dev_tools.subprocess, "run", return_value=down):
+            with self.assertRaises(ToolError) as caught:
+                dev_tools.list_containers()
+        self.assertIn("Docker Desktop isn't running", str(caught.exception))
+
+
+class ContainerNamesTest(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+
+        def fake_docker(*args):
+            self.calls.append(args)
+            if args[:2] == ("ps", "-a"):
+                return 0, "web-db\nhestia-test-hello", ""
+            return 0, args[-1], ""
+
+        self.addCleanup(setattr, dev_tools, "_docker", dev_tools._docker)
+        dev_tools._docker = fake_docker
+
+    def test_unknown_container_is_refused_with_the_list(self):
+        with self.assertRaises(ToolError) as caught:
+            dev_tools.start_container("postgres")
+        self.assertIn("web-db", str(caught.exception))
+        self.assertNotIn(("start", "postgres"), self.calls)
+
+    def test_names_match_loosely_but_the_real_name_is_used(self):
+        self.assertIn("Started", dev_tools.start_container("Web DB"))
+        self.assertIn(("start", "web-db"), self.calls)
+        self.assertIn("Stopped", dev_tools.stop_container("web db"))
+        self.assertIn(("stop", "web-db"), self.calls)
+
+
+def _docker_running():
+    try:
+        return support.subprocess.run(["docker", "info"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, support.subprocess.TimeoutExpired):
+        return False
+
+
+@unittest.skipUnless(_docker_running(), "Docker isn't installed or Docker Desktop isn't running")
+class RealDockerTest(unittest.TestCase):
+    NAME = "hestia-test-hello"
+
+    def setUp(self):
+        support.subprocess.run(["docker", "rm", "-f", self.NAME], capture_output=True)
+        support.subprocess.run(["docker", "create", "--name", self.NAME, "hello-world"], capture_output=True, check=True)
+        self.addCleanup(support.subprocess.run, ["docker", "rm", "-f", self.NAME], capture_output=True)
+
+    def test_list_start_and_stop_a_real_container(self):
+        self.assertIn(self.NAME, dev_tools.list_containers())
+        self.assertIn("Started", dev_tools.start_container(self.NAME))
+        self.assertIn("Stopped", dev_tools.stop_container(self.NAME))
+
+
 class RegistrationTest(unittest.TestCase):
+    def test_docker_tool_tiers(self):
+        import tools
+        tiers = tools.TOOL_TIERS["dev_tools"]
+        self.assertEqual(tiers["list_containers"], tools.TIER_READ)
+        self.assertEqual(tiers["start_container"], tools.TIER_WRITE)
+        self.assertEqual(tiers["stop_container"], tools.TIER_WRITE)
+
     def test_open_in_vscode_is_write_tier(self):
         import tools
         self.assertEqual(tools.TOOL_TIERS["dev_tools"]["open_in_vscode"], tools.TIER_WRITE)

@@ -19,6 +19,7 @@ client on stdin; chat.py starts it itself.
 import os
 import platform
 import re
+import subprocess
 import time
 from datetime import timedelta
 
@@ -81,6 +82,36 @@ def _size(n_bytes):
     return f"{n_bytes / 1_048_576:.0f} MB"
 
 
+def _wsl_summary(raw):
+    """
+    One line from `wsl -l -v` output (raw bytes, or None if wsl.exe is
+    missing). wsl.exe writes UTF-16 LE rather than the console code page,
+    and listing distros doesn't start the WSL VM.
+    """
+    if raw is None:
+        return "WSL: not available"
+    text = raw.decode("utf-16-le", errors="replace").replace("\x00", "")
+    distros = []
+    for line in text.splitlines()[1:]:  # first line is the NAME/STATE/VERSION header
+        parts = line.replace("*", " ").split()
+        if len(parts) >= 3 and parts[-1].isdigit():
+            distros.append(f"{parts[0]} ({parts[1].lower()}, WSL{parts[-1]})")
+    if distros:
+        return "WSL: " + ", ".join(distros)
+    if "not installed" in text.lower():
+        return "WSL: not installed"
+    return "WSL: installed, no Linux distributions"
+
+
+def _wsl_status():
+    try:
+        done = subprocess.run(["wsl.exe", "-l", "-v"], capture_output=True, timeout=10,
+                              stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return _wsl_summary(None)
+    return _wsl_summary(done.stdout + done.stderr)
+
+
 @server.tool()
 def get_system_info() -> str:
     """Get information about this computer: operating system, CPU, memory use, disk space on the system drive, battery level, and how long it has been running. Use this when the user asks how their machine is doing, whether it is low on memory or disk space, or what it is running."""
@@ -121,6 +152,7 @@ def get_system_info() -> str:
 
     uptime = timedelta(seconds=int(time.time() - psutil.boot_time()))
     lines.append(f"Running since last boot: {uptime}")
+    lines.append(_wsl_status())
 
     return "\n".join(lines)
 

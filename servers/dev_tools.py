@@ -287,5 +287,81 @@ def open_in_vscode(repo: str) -> str:
     return f"Opened {display} in VS Code."
 
 
+DOCKER_TIMEOUT_SECONDS = 30
+
+# What the docker CLI says when it's installed but Docker Desktop's engine
+# isn't up: a named-pipe connect failure on Windows, a daemon message elsewhere.
+_DOCKER_DOWN = re.compile(r"error during connect|cannot connect to the docker daemon|docker desktop is (not running|stopped)",
+                          re.IGNORECASE)
+
+
+def _docker(*args):
+    """Run one fixed docker command. Returns (exit code, stdout, stderr)."""
+    try:
+        done = subprocess.run(
+            ["docker", *args],
+            stdin=subprocess.DEVNULL, capture_output=True,
+            timeout=DOCKER_TIMEOUT_SECONDS, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except FileNotFoundError:
+        raise ToolError("Docker isn't installed, or isn't on PATH.")
+    except subprocess.TimeoutExpired:
+        raise ToolError(f"Docker took longer than {DOCKER_TIMEOUT_SECONDS} seconds and was stopped.")
+    out = done.stdout.decode("utf-8", errors="replace").strip()
+    err = done.stderr.decode("utf-8", errors="replace").strip()
+    if done.returncode != 0 and _DOCKER_DOWN.search(err):
+        raise ToolError("Docker Desktop isn't running. Start it, wait for it to finish starting, then try again.")
+    return done.returncode, out, err
+
+
+@server.tool()
+def list_containers() -> str:
+    """List the Docker containers on this computer, running or stopped, with their status and image. Use this when the user asks what containers they have or whether one is running."""
+    code, out, err = _docker("ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}")
+    if code != 0:
+        raise ToolError(err or out or "docker ps failed.")
+    if not out:
+        return "No Docker containers exist yet."
+    lines = ["Docker containers:"]
+    for row in out.splitlines():
+        name, status, image = (row.split("\t") + ["", ""])[:3]
+        lines.append(f"  {name} — {status} (image {image})")
+    return "\n".join(lines)
+
+
+def _container(name):
+    """The real name of an existing container matching `name` loosely, or a ToolError with the list."""
+    code, out, err = _docker("ps", "-a", "--format", "{{.Names}}")
+    if code != 0:
+        raise ToolError(err or out or "docker ps failed.")
+    existing = {_normalise(real): real for real in out.splitlines() if real}
+    match = existing.get(_normalise(name))
+    if match is None:
+        names = ", ".join(sorted(existing.values())) or "(none)"
+        raise ToolError(f"There's no container called '{name}'. Existing containers: {names}.")
+    # The name passed to docker comes from docker's own list, never from the model.
+    return match
+
+
+@server.tool()
+def start_container(name: str) -> str:
+    """Start an existing, stopped Docker container by name. It can't create new containers or run images. The user approves it before it happens."""
+    real = _container(name)
+    code, out, err = _docker("start", real)
+    if code != 0:
+        raise ToolError(err or out or f"Couldn't start {real}.")
+    return f"Started {real}."
+
+
+@server.tool()
+def stop_container(name: str) -> str:
+    """Stop a running Docker container by name. The user approves it before it happens."""
+    real = _container(name)
+    code, out, err = _docker("stop", real)
+    if code != 0:
+        raise ToolError(err or out or f"Couldn't stop {real}.")
+    return f"Stopped {real}."
+
+
 if __name__ == "__main__":
     server.run()  # stdio transport by default
