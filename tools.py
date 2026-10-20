@@ -75,6 +75,7 @@ TOOL_TIERS = {
         "git_status": TIER_READ,
         "git_diff": TIER_READ,
         "git_commit": TIER_WRITE,
+        "open_in_vscode": TIER_WRITE,
     },
 }
 

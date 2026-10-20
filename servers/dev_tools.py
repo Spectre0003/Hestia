@@ -16,8 +16,11 @@ As with the other servers, whether a tool may run at all is decided in
 tools.py (TOOL_TIERS), never here.
 """
 
+import ctypes
+import ctypes.wintypes as wintypes
 import os
 import re
+import shutil
 import subprocess
 
 import yaml
@@ -205,6 +208,83 @@ def git_commit(repo: str, files: list[str], message: str) -> str:
         raise ToolError(err or out or "git commit failed.")
     _, short, _ = _git(folder, "log", "-1", "--format=%h")
     return f"Committed {short} in {display}: {message.splitlines()[0]} ({len(paths)} file(s)). Not pushed."
+
+
+def _code_exe():
+    """
+    VS Code's own Code.exe — never the `code.cmd` wrapper on PATH: passing
+    arguments through a Windows batch file is a known injection class.
+    """
+    candidates = []
+    shim = shutil.which("code")
+    if shim:  # <install>\bin\code.cmd -> <install>\Code.exe
+        candidates.append(os.path.join(os.path.dirname(os.path.dirname(shim)), "Code.exe"))
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(os.path.join(local, "Programs", "Microsoft VS Code", "Code.exe"))
+    return next((path for path in candidates if os.path.isfile(path)), None)
+
+
+def _user_environment():
+    """
+    The user's normal login environment, as Windows builds it for a Start
+    Menu launch. This server only gets ~12 variables from the MCP client,
+    and VS Code's terminals would inherit that stripped set (no ComSpec,
+    windir, ProgramFiles...) if it were passed on. Falls back to this
+    process's environment if Windows won't build one.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    userenv.CreateEnvironmentBlock.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
+    userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+
+    token, block = wintypes.HANDLE(), ctypes.c_void_p()
+    TOKEN_QUERY = 0x0008
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
+        return dict(os.environ)
+    try:
+        if not userenv.CreateEnvironmentBlock(ctypes.byref(block), token, False):
+            return dict(os.environ)
+        try:
+            env, address = {}, block.value
+            while True:  # "NAME=value\0NAME=value\0...\0\0", UTF-16
+                entry = ctypes.wstring_at(address)
+                if not entry:
+                    return env
+                name, _, value = entry.partition("=")
+                if name:
+                    env[name] = value
+                address += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
+        finally:
+            userenv.DestroyEnvironmentBlock(block)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _launch(argv):
+    """Start a program detached from this server, with the user's own environment."""
+    subprocess.Popen(
+        argv, env=_user_environment(), close_fds=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+
+
+@server.tool(description=(
+    "Open a git repository's folder in VS Code. The user approves it "
+    "before it happens. " + _REPO_HINT
+))
+def open_in_vscode(repo: str) -> str:
+    display, folder = _repo(repo)
+    exe = _code_exe()
+    if exe is None:
+        raise ToolError("VS Code isn't installed, or couldn't be found.")
+    _launch([exe, folder])
+    return f"Opened {display} in VS Code."
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest import mock
 
 import support
 from support import git, make_repo, use_repos, write
@@ -138,7 +139,64 @@ class GitCommitTest(unittest.TestCase):
         self.assertEqual(self.commit_count(), 1)
 
 
+class OpenInVSCodeTest(unittest.TestCase):
+    def setUp(self):
+        self.repo = make_repo(self)
+        use_repos(self, dev_tools, hestia=self.repo)
+        self.launched = []
+        self.addCleanup(setattr, dev_tools, "_launch", dev_tools._launch)
+        dev_tools._launch = self.launched.append
+
+    def fake_install(self):
+        root = support.temp_folder(self)
+        exe = write(root, "Code.exe", "")
+        shim = write(root, os.path.join("bin", "code.cmd"), "")
+        return exe, shim
+
+    def test_finds_code_exe_next_to_the_code_command(self):
+        exe, shim = self.fake_install()
+        with mock.patch.object(dev_tools.shutil, "which", return_value=shim):
+            self.assertEqual(dev_tools._code_exe(), exe)
+
+    def test_falls_back_to_the_default_install_folder(self):
+        local = support.temp_folder(self)
+        exe = write(local, os.path.join("Programs", "Microsoft VS Code", "Code.exe"), "")
+        with mock.patch.object(dev_tools.shutil, "which", return_value=None), \
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": local}):
+            self.assertEqual(dev_tools._code_exe(), exe)
+
+    def test_opens_a_listed_repo_with_code_exe_not_the_cmd_wrapper(self):
+        exe, _ = self.fake_install()
+        with mock.patch.object(dev_tools, "_code_exe", return_value=exe):
+            result = dev_tools.open_in_vscode("hestia")
+        self.assertEqual(self.launched, [[exe, self.repo]])
+        self.assertIn("hestia", result)
+
+    def test_refuses_an_unlisted_repo(self):
+        with self.assertRaises(ToolError):
+            dev_tools.open_in_vscode("somewhere-else")
+        self.assertEqual(self.launched, [])
+
+    def test_says_so_when_vscode_is_missing(self):
+        with mock.patch.object(dev_tools, "_code_exe", return_value=None):
+            with self.assertRaises(ToolError) as caught:
+                dev_tools.open_in_vscode("hestia")
+        self.assertIn("VS Code", str(caught.exception))
+
+    def test_launch_environment_is_the_users_full_one(self):
+        # The server itself only gets ~12 variables from the MCP client;
+        # VS Code's terminals would inherit that if it were passed on.
+        env = dev_tools._user_environment()
+        names = {name.lower() for name in env}
+        for needed in ("comspec", "windir", "programfiles", "path", "userprofile"):
+            self.assertIn(needed, names)
+
+
 class RegistrationTest(unittest.TestCase):
+    def test_open_in_vscode_is_write_tier(self):
+        import tools
+        self.assertEqual(tools.TOOL_TIERS["dev_tools"]["open_in_vscode"], tools.TIER_WRITE)
+
     def test_git_commit_is_write_tier(self):
         import tools
         self.assertEqual(tools.TOOL_TIERS["dev_tools"]["git_commit"], tools.TIER_WRITE)
