@@ -427,7 +427,10 @@ def execute(conn, session_id, name, arguments, confirm, turn=None):
             duration_ms = int((time.perf_counter() - started) * 1000)
             if (server, name) in LOCAL_DATA_TOOLS:
                 turn["local_data"] = True
-            if tier == TIER_NETWORK:
+            if tier == TIER_NETWORK and status == "ok":
+                # Only a call that worked brought web content in; a failed
+                # search is when made-up results are most likely, so it
+                # mustn't silence run_turn's "weren't looked up" note.
                 turn["web"] = True
 
     result = _truncate(result)

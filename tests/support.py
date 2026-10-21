@@ -62,11 +62,11 @@ def temp_db(test):
     return conn, storage.start_new_session(conn)
 
 
-def fake_tool(test, server, name, result="ok"):
+def fake_tool(test, server, name, result="ok", status="ok"):
     """
     Make `name` look like a tool `server` offers, without starting any
     server: tools.execute runs a stub that records each call's arguments
-    and returns ("ok", result). Returns the list of recorded arguments.
+    and returns (status, result). Returns the list of recorded arguments.
     """
     import tools
     calls = []
@@ -79,7 +79,7 @@ def fake_tool(test, server, name, result="ok"):
         if tool_name != name:
             return previous(srv, tool_name, arguments)
         calls.append(arguments)
-        return "ok", result
+        return status, result
 
     tools._call = stub
     test.addCleanup(setattr, tools, "_call", previous)

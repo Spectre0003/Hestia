@@ -16,6 +16,7 @@ is treated as data, never instructions.
 Standard library only.
 """
 
+import codecs
 import html.parser
 import ipaddress
 import json
@@ -204,6 +205,10 @@ def fetch_page(url: str) -> str:
         raw = response.read(MAX_PAGE_BYTES + 1)
         charset = response.headers.get_content_charset() or "utf-8"
 
+    try:
+        codecs.lookup(charset)
+    except LookupError:  # pages do declare charsets Python has never heard of
+        charset = "utf-8"
     cut = len(raw) > MAX_PAGE_BYTES
     body = raw[:MAX_PAGE_BYTES].decode(charset, errors="replace")
     if kind == "text/plain":

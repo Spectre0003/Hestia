@@ -152,6 +152,11 @@ class FetchPageTest(unittest.TestCase):
         base, _ = self.serve_as_public(lambda path: (200, {"Content-Type": "text/plain"}, big))
         self.assertIn("cut short", web_tools.fetch_page(base + "/big"))
 
+    def test_an_unknown_charset_falls_back_instead_of_failing(self):
+        base, _ = self.serve_as_public(
+            lambda path: (200, {"Content-Type": "text/html; charset=not-a-real-charset"}, b"<p>still readable</p>"))
+        self.assertIn("still readable", web_tools.fetch_page(base + "/"))
+
     def test_non_text_content_is_refused(self):
         base, _ = self.serve_as_public(lambda path: (200, {"Content-Type": "image/png"}, b"\x89PNG"))
         with self.assertRaises(ToolError) as caught:

@@ -111,6 +111,12 @@ class RunTurnWiringTest(unittest.TestCase):
         printed = self.run_turn(["web_search"], answer="Source: https://en.wikipedia.org/wiki/Hestia")
         self.assertNotIn("weren't looked up", printed)
 
+    def test_links_after_a_failed_search_still_get_the_note(self):
+        # A failed search (e.g. SearXNG down) is when made-up results are most likely.
+        fake_tool(self, "web_tools", "web_search", "The search engine isn't running.", status="error")
+        printed = self.run_turn(["web_search"], answer="Top results: http://example.com/result1")
+        self.assertIn("weren't looked up", printed)
+
     def test_answers_without_links_get_no_note(self):
         self.assertNotIn("weren't looked up", self.run_turn(answer="Hello there."))
 
