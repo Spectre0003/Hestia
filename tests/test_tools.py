@@ -79,19 +79,35 @@ class RunTurnWiringTest(unittest.TestCase):
         self.searched = fake_tool(self, "web_tools", "web_search", "results")
         fake_tool(self, "hestia_core", "read_file", "secret notes")
 
-    def run_turn(self, *rounds):
+    def run_turn(self, *rounds, answer="Done."):
+        """Run chat.run_turn against a stand-in model; returns what it printed."""
         script = list(rounds)
 
         def stream_reply(messages, offer_tools=True):
             if script and offer_tools:
                 return "", [NS(function=NS(name=n, arguments={})) for n in script.pop(0)]
-            return "Done.", []
+            return answer, []
 
         self.addCleanup(setattr, chat, "stream_reply", chat.stream_reply)
         chat.stream_reply = stream_reply
-        with contextlib.redirect_stdout(io.StringIO()):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
             chat.run_turn(self.conn, self.session, [{"role": "user", "content": "hi"}],
                           lambda name, arguments, after_web=False: True)
+        return printed.getvalue()
+
+    def test_links_with_no_lookup_this_turn_get_a_note(self):
+        # Seen live: the model "searched" and listed example.com/result1 links
+        # in a turn where no search ran at all.
+        printed = self.run_turn(answer="Here are the top results: http://example.com/result1")
+        self.assertIn("weren't looked up", printed)
+
+    def test_links_after_a_real_search_get_no_note(self):
+        printed = self.run_turn(["web_search"], answer="Source: https://en.wikipedia.org/wiki/Hestia")
+        self.assertNotIn("weren't looked up", printed)
+
+    def test_answers_without_links_get_no_note(self):
+        self.assertNotIn("weren't looked up", self.run_turn(answer="Hello there."))
 
     def test_search_after_a_file_read_in_the_same_turn_is_refused(self):
         self.run_turn(["read_file"], ["web_search"])

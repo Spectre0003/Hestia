@@ -232,6 +232,13 @@ def run_turn(conn, session_id, call_messages, confirm):
         reply_parts.append(text)
 
     reply = " ".join(part.strip() for part in reply_parts if part.strip())
+    # Live testing caught the model listing "search results" with made-up
+    # links in a turn where no search ran. Prompt wording hasn't stopped this
+    # kind of thing before, so the code says it instead. Printed, not saved.
+    if "http://" in reply or "https://" in reply:
+        if not turn.get("web"):
+            print("\n[Note: no web search or page fetch ran for this answer, "
+                  "so any web addresses in it weren't looked up.]", end="")
     return reply, tool_turns
 
 
