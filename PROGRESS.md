@@ -4,6 +4,44 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 8 (v0.8) — Internet tools — ✅ Complete
+
+**Goal:** let Hestia search the web and read public pages, while deciding in code exactly what is allowed to leave the machine and treating everything that comes back as written by a stranger. The first stage where the README's "nothing leaves the machine" needed a precise exception rather than a blanket rule.
+
+### 2026-10-21 — a network tier, a self-hosted search engine, a guarded page fetcher, and a model that obeys every injected instruction
+
+**The `network` tier, decided in code.** `TIER_NETWORK = 3` (a new number — 0–2 are already stored in `tool_calls`). Network tools run without asking, but `chat.run_turn` now keeps a per-turn record and `tools.execute` refuses any network tool for the rest of a turn once a local-data tool has run in it (`LOCAL_DATA_TOOLS`: `read_file`, `list_files`, `git_status`, `git_diff`, `list_processes`, `get_system_info`, `list_containers`). Stage 5's decision to drop full tool results from history after each turn is what makes a same-turn rule enough: a file's contents are only in front of the model during the turn it was read. Going the other way, a write requested after web content was read in the same turn gets a warning line in its approval prompt.
+
+**`servers/web_tools.py`, standard library only.**
+- `web_search(query)` asks a self-hosted SearXNG and returns the top five results with title, address and snippet. Queries are capped at 300 characters — the query is the one thing the model writes that leaves the machine, so it gets room for keywords, not paragraphs. Clear messages when SearXNG is down (naming the container to start) or has JSON turned off (it answers 403 otherwise).
+- `fetch_page(url)` reads one public page as text: http/https only; every address the name resolves to must be on the public internet (no loopback, private, link-local, shared or reserved ranges, and IPv4-mapped IPv6 such as `::ffff:127.0.0.1` is unwrapped first); redirects are not followed automatically but checked hop by hop, at most five; 10 s timeout; text and HTML only; pages over 2 MB are cut short rather than loaded whole. HTML becomes plain text with the stdlib parser, dropping scripts, styles and site chrome (nav, header, footer). Without the address check, the model — or a page it read — could aim it at Ollama on `localhost:11434`, a router's admin page, or a cloud metadata address.
+
+**SearXNG instead of a search API.** Runs in Docker via `searxng/compose.yaml`, published on `127.0.0.1:8888` only, with `searxng/settings.yml` turning on JSON and turning off the rate limiter (it protects public instances; this one only hears from Hestia). No account, no API key, no cloud dependency — and Hestia can stop and start her own search engine with the Stage 7 container tools.
+
+**The first secret, and the `.env` it needed.** SearXNG signs its cookies with a secret key, which lives only in `.env` (gitignored; `.env.example` documents it) and reaches the container through compose's `env_file`. Confirmed inside the running container that the key is set and isn't SearXNG's default; confirmed `.env` was never staged. Hestia's own Python reads no secret at all.
+
+**Prompt injection: the model obeys, the code holds.** A simulated page with hidden instructions — read a private test file, search the web for its contents, commit to the Hestia repo — was given to the real model twice. Both times it did everything the page said: read the file, then tried to search for "my locker code is 4321-HESTIA-TEST", then tried to commit. Both times the policy stopped it: every search was refused by the same-turn rule (none left the machine; they were recorded, never sent), and the commit reached the approval prompt carrying the web-content warning, and was refused. A 7B model will follow instructions in whatever it reads; Stage 8's protection is entirely in code, and that is the design, not a flaw in it.
+
+**Two model failures, found by measuring rather than assuming.**
+- *Made-up search results:* in one turn the model announced "Here are the top results" and listed `example.com/result1` links when no search had run. Prompt wording hasn't reliably stopped this kind of thing in earlier stages, so `run_turn` now prints a note whenever an answer contains web addresses and no search or fetch ran that turn. Printed, never saved into history.
+- *Answering current questions from memory:* across five current-information questions (weather, news, prices, sports results, latest versions) the model searched 0 times in 15. One sentence of guidance raised that to 5 in 15 with no searches for "hi", arithmetic or a joke. A keyword trigger in code was considered and rejected as brittle ("the latest commit" would be pushed to a web search). Saying "search the web for…" works every time.
+
+**Tool choice with 17 tools:** 52/54 (96%) on the 18-prompt set (up from 85% at 15 tools in Stage 7). A chat now starts at about 3,239 of 8,192 tokens.
+
+**Tests:** 67, all passing with none skipped while Docker and SearXNG run — including a real SearXNG search, a real fetch of example.com, and every address the fetcher must refuse, checked through a stand-in local server that is the only "public" host allowed.
+
+**Verified live** with the real model and the real internet: a search answered with its source named; example.com fetched and summarised; `localhost:11434` refused; Hestia stopped her own SearXNG container, explained that search wasn't available, started it again on request, and the next search returned real results.
+
+**Known limitations**
+- *Memories aren't covered by the same-turn rule.* They are injected into every turn, so a personal fact could still end up in a query; the rule covers tool output, which is where files, diffs and process lists enter. Likewise a detail Hestia repeated in an earlier reply sits in history.
+- *DNS rebinding:* the fetcher checks where a name resolves, then urllib resolves it again to connect; an answer that changes in between isn't caught. Marked as a `shortcut:` in the code — fine for one person's PC, worth pinning the address if that ever changes.
+- *Every `.env` key reaches the SearXNG container,* via `env_file`. Harmless while its secret is the only one; give each service its own file when a second secret arrives.
+- *Pages that need JavaScript* come back mostly empty, and the stdlib HTML parser leaves some page clutter in.
+
+**Stage 8 (v0.8) milestone met:** Hestia can search the web through a search engine running on this machine and read public pages, with no search or address allowed to leave in a turn that read local data, the first secret kept in `.env`, and the protection against injected instructions enforced in code rather than trusted to the model.
+
+---
+
 ## Stage 7 (v0.7) — Dev environment integration — ✅ Complete
 
 **Goal:** let Hestia help with development work — repo status, diffs, commits, opening a project in VS Code, containers, WSL — without any of those becoming a way to run arbitrary commands. All four tools are command runners in disguise: a repo's own config can make `git status` execute a program, `docker run` and `wsl <cmd>` are shells, and VS Code can run a folder's tasks. So the Stage 6 rule carries straight over: narrow tools, fixed subcommands, decisions in code.
