@@ -28,7 +28,7 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 **Tool choice with 17 tools:** 52/54 (96%) on the 18-prompt set (up from 85% at 15 tools in Stage 7). A chat now starts at about 3,239 of 8,192 tokens.
 
-**Tests:** 67, all passing with none skipped while Docker and SearXNG run — including a real SearXNG search, a real fetch of example.com, and every address the fetcher must refuse, checked through a stand-in local server that is the only "public" host allowed.
+**Tests:** 69, all passing with none skipped while Docker and SearXNG run — including a real SearXNG search, a real fetch of example.com, and every address the fetcher must refuse, checked through a stand-in local server that is the only "public" host allowed.
 
 **Verified live** with the real model and the real internet: a search answered with its source named; example.com fetched and summarised; `localhost:11434` refused; Hestia stopped her own SearXNG container, explained that search wasn't available, started it again on request, and the next search returned real results.
 
