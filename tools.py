@@ -149,7 +149,11 @@ TOOL_GUIDANCE = (
     "did the same thing earlier in this conversation: the user may have "
     "closed the app, deleted the file, or simply want it again. Never "
     "treat an action as already handled because it appears earlier in "
-    "the conversation — run the tool again."
+    "the conversation — run the tool again. "
+    "Your own knowledge stops at your training date. For anything that "
+    "changes over time — weather, news, recent events, prices, sports "
+    "results, the latest version of something — use web_search instead of "
+    "answering from memory."
 )
 
 _loop = None      # event loop running on the background thread

@@ -28,6 +28,11 @@ class NetworkTierTest(unittest.TestCase):
     def last_decision(self):
         return self.conn.execute("SELECT decision FROM tool_calls ORDER BY id DESC LIMIT 1").fetchone()[0]
 
+    def test_guidance_says_to_search_for_current_things(self):
+        # Without it, 0 of 15 current-info questions (weather, news, prices,
+        # latest versions) got a search; with it, 5 of 15, and no false ones.
+        self.assertIn("web_search instead of answering from memory", tools.TOOL_GUIDANCE)
+
     def test_tier_values(self):
         self.assertEqual(tools.TIER_NETWORK, 3)  # 0-2 are already stored in tool_calls rows
         self.assertEqual(tools.TOOL_TIERS["web_tools"]["web_search"], tools.TIER_NETWORK)
