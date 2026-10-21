@@ -44,6 +44,10 @@ import storage
 TIER_READ = 0
 TIER_WRITE = 1
 TIER_BLOCKED = 2
+# Reaches the internet (Stage 8). Runs without asking, but never in a turn
+# where local data has already been read — see execute(). Numbered after
+# BLOCKED rather than renumbering: tier values are stored in tool_calls.
+TIER_NETWORK = 3
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -80,6 +84,20 @@ TOOL_TIERS = {
         "start_container": TIER_WRITE,
         "stop_container": TIER_WRITE,
     },
+    "web_tools": {
+        "web_search": TIER_NETWORK,
+        "fetch_page": TIER_NETWORK,
+    },
+}
+
+# Tools whose results are the user's own data: files, repo contents, what
+# is running on the machine. Once one of these has run in a turn, network
+# tools are refused for the rest of it, so nothing it returned can leave in
+# a search query or a URL. Keyed by server like TOOL_TIERS.
+LOCAL_DATA_TOOLS = {
+    ("hestia_core", "list_files"), ("hestia_core", "read_file"),
+    ("system_tools", "get_system_info"), ("system_tools", "list_processes"),
+    ("dev_tools", "git_status"), ("dev_tools", "git_diff"), ("dev_tools", "list_containers"),
 }
 
 # A user turn can't trigger more than this many rounds of tool calls
@@ -357,23 +375,34 @@ def _truncate(text):
     return text[:MAX_RESULT_CHARS] + f"\n[...truncated, {len(text) - MAX_RESULT_CHARS} more characters]"
 
 
-def execute(conn, session_id, name, arguments, confirm):
+def execute(conn, session_id, name, arguments, confirm, turn=None):
     """
     Handle one tool request from the model and return the text to send
     back to it. Never raises for a tool problem — a refused or failed
     tool becomes a result the model can read and explain.
 
-    `confirm(name, arguments)` is called for TIER_WRITE tools and must
-    return True only if the user explicitly agreed. The chat loop owns
-    the terminal, so it supplies this rather than this module prompting.
+    `confirm(name, arguments, after_web=...)` is called for TIER_WRITE
+    tools and must return True only if the user explicitly agreed. The
+    chat loop owns the terminal, so it supplies this rather than this
+    module prompting. after_web=True means web content was read earlier
+    in this turn, so the request may come from a page rather than the user.
+
+    `turn` is a dict the chat loop starts empty for each user message;
+    this records in it what the turn has read, for the network rule.
     """
     arguments = dict(arguments or {})
+    turn = {} if turn is None else turn
     tool = _tools.get(name)
     server = tool["server"] if tool else None
     tier = _tier(server, name)
     duration_ms = 0  # only the tool's own run time — not time spent waiting on the user
 
-    if tier == TIER_BLOCKED:
+    if tier == TIER_NETWORK and turn.get("local_data"):
+        decision, status = "blocked", "skipped"
+        result = (f"'{name}' can't be used in the same turn as reading local data, so "
+                  "nothing from it can leave this computer. Ask the user to repeat the "
+                  "request on its own.")
+    elif tier == TIER_BLOCKED:
         decision, status = "blocked", "skipped"
         result = f"The tool '{name}' isn't available."
     else:
@@ -383,14 +412,18 @@ def execute(conn, session_id, name, arguments, confirm):
         error = _check_arguments(tool["parameters"], name, arguments)
         if error:
             decision, status, result = "invalid", "error", error
-        elif tier == TIER_WRITE and not confirm(name, arguments):
+        elif tier == TIER_WRITE and not confirm(name, arguments, after_web=bool(turn.get("web"))):
             decision, status = "denied", "skipped"
             result = f"The user declined to let '{name}' run."
         else:
-            decision = "auto" if tier == TIER_READ else "approved"
+            decision = "approved" if tier == TIER_WRITE else "auto"
             started = time.perf_counter()
             status, result = _call(server, name, arguments)
             duration_ms = int((time.perf_counter() - started) * 1000)
+            if (server, name) in LOCAL_DATA_TOOLS:
+                turn["local_data"] = True
+            if tier == TIER_NETWORK:
+                turn["web"] = True
 
     result = _truncate(result)
     storage.log_tool_call(

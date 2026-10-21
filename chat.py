@@ -162,14 +162,18 @@ def stream_reply(messages, offer_tools=True):
     return text, tool_calls
 
 
-def confirm_tool(persona_name, tool_name, arguments):
+def confirm_tool(persona_name, tool_name, arguments, after_web=False):
     """
     Ask the user before a TIER_WRITE tool runs. Anything other than an
     explicit 'y'/'yes' — including Ctrl+C — counts as no. Each argument
     is shown on its own line; long values are cut short, with a count
     of what's hidden, so a big file write can't flood the terminal.
+    after_web adds a warning: web content was read earlier this turn,
+    and a page can carry instructions written to look like the user's.
     """
     print(f"\n[{persona_name} wants to run '{tool_name}':")
+    if after_web:
+        print("    (Asked for after reading web content this turn — make sure it's what YOU asked for.)")
     for key, value in arguments.items():
         shown = json.dumps(value, ensure_ascii=False)
         if len(shown) > CONFIRM_PREVIEW_CHARS:
@@ -200,6 +204,7 @@ def run_turn(conn, session_id, call_messages, confirm):
     """
     reply_parts = []
     tool_turns = []
+    turn = {}  # what this turn has read, for tools.execute's network rule
 
     for _ in range(tools.MAX_TOOL_ROUNDS):
         text, tool_calls = stream_reply(call_messages)
@@ -217,7 +222,7 @@ def run_turn(conn, session_id, call_messages, confirm):
         for call in calls:
             name = call["function"]["name"]
             print(f"[tool: {name}] ", end="", flush=True)
-            result = tools.execute(conn, session_id, name, call["function"]["arguments"], confirm)
+            result = tools.execute(conn, session_id, name, call["function"]["arguments"], confirm, turn)
             call_messages.append({"role": "tool", "tool_name": name, "content": result})
             tool_turns.append({"role": "tool", "tool_name": name, "content": tools.RESULT_NOT_KEPT})
     else:

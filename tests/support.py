@@ -47,6 +47,52 @@ def make_repo(test, commit=True):
     return path
 
 
+def temp_db(test):
+    """Point storage (and the server log) at a throwaway folder. Returns (conn, session_id)."""
+    import storage
+    import tools
+    folder = temp_folder(test)
+    for module, attr in ((storage, "DB_DIR"), (storage, "DB_PATH"), (tools, "SERVER_LOG_PATH")):
+        test.addCleanup(setattr, module, attr, getattr(module, attr))
+    storage.DB_DIR = folder
+    storage.DB_PATH = os.path.join(folder, "test.db")
+    tools.SERVER_LOG_PATH = os.path.join(folder, "mcp_servers.log")
+    conn = storage.get_connection()
+    test.addCleanup(conn.close)
+    return conn, storage.start_new_session(conn)
+
+
+def fake_tool(test, server, name, result="ok"):
+    """
+    Make `name` look like a tool `server` offers, without starting any
+    server: tools.execute runs a stub that records each call's arguments
+    and returns ("ok", result). Returns the list of recorded arguments.
+    """
+    import tools
+    calls = []
+    tools._tools[name] = {"server": server, "description": "",
+                          "parameters": {"type": "object", "properties": {}, "required": []}}
+    test.addCleanup(tools._tools.pop, name, None)
+    previous = tools._call
+
+    def stub(srv, tool_name, arguments):
+        if tool_name != name:
+            return previous(srv, tool_name, arguments)
+        calls.append(arguments)
+        return "ok", result
+
+    tools._call = stub
+    test.addCleanup(setattr, tools, "_call", previous)
+    return calls
+
+
+def mock_input(*answers):
+    """Feed input() these answers, as if typed."""
+    from unittest import mock
+    import io as _io
+    return mock.patch("sys.stdin", _io.StringIO("".join(a + "\n" for a in answers)))
+
+
 def use_repos(test, module, **repos):
     """Point module.REPOS at the given name=path pairs for one test."""
     test.addCleanup(setattr, module, "REPOS", module.REPOS)
