@@ -1,0 +1,19 @@
+# Hestia's self-hosted search engine (Stage 8). Start it with:
+#   docker compose -f searxng/compose.yaml up -d
+# After that, Hestia's own start_container / stop_container work on it too.
+#
+# Bound to 127.0.0.1 only: nothing else on your network can reach it.
+# The secret comes from .env in the project root (gitignored); copy
+# .env.example to .env and fill it in if you don't have one.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: hestia-searxng
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    env_file: ../.env
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+    restart: "no"

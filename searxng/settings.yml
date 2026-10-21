@@ -1,0 +1,17 @@
+# SearXNG settings for Hestia: the defaults, plus what a local,
+# single-user instance needs. The secret key comes from SEARXNG_SECRET
+# in .env, never from this file.
+use_default_settings: true
+
+server:
+  # Rate limiting and bot detection protect public instances; this one
+  # only ever hears from Hestia on 127.0.0.1.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # json is what Hestia's web_search reads; without it SearXNG answers 403.
+  formats:
+    - html
+    - json
