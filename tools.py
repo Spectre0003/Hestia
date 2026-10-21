@@ -57,6 +57,7 @@ SERVERS = {
     "hestia_core": [sys.executable, os.path.join(_HERE, "servers", "hestia_core.py")],
     "system_tools": [sys.executable, os.path.join(_HERE, "servers", "system_tools.py")],
     "dev_tools": [sys.executable, os.path.join(_HERE, "servers", "dev_tools.py")],
+    "web_tools": [sys.executable, os.path.join(_HERE, "servers", "web_tools.py")],
 }
 
 # The one place a tool's tier is decided. Keyed by server as well as tool
