@@ -58,6 +58,7 @@ SERVERS = {
     "system_tools": [sys.executable, os.path.join(_HERE, "servers", "system_tools.py")],
     "dev_tools": [sys.executable, os.path.join(_HERE, "servers", "dev_tools.py")],
     "web_tools": [sys.executable, os.path.join(_HERE, "servers", "web_tools.py")],
+    "memory_tools": [sys.executable, os.path.join(_HERE, "servers", "memory_tools.py")],
 }
 
 # The one place a tool's tier is decided. Keyed by server as well as tool
@@ -89,6 +90,9 @@ TOOL_TIERS = {
         "web_search": TIER_NETWORK,
         "fetch_page": TIER_NETWORK,
     },
+    "memory_tools": {
+        "recall": TIER_READ,
+    },
 }
 
 # Tools whose results are the user's own data: files, repo contents, what
@@ -99,6 +103,9 @@ LOCAL_DATA_TOOLS = {
     ("hestia_core", "list_files"), ("hestia_core", "read_file"),
     ("system_tools", "get_system_info"), ("system_tools", "list_processes"),
     ("dev_tools", "git_status"), ("dev_tools", "git_diff"), ("dev_tools", "list_containers"),
+    # Recalled conversation is the most private thing here: everything the
+    # user has ever said. It belongs in this set above all.
+    ("memory_tools", "recall"),
 }
 
 # A user turn can't trigger more than this many rounds of tool calls
@@ -150,6 +157,12 @@ TOOL_GUIDANCE = (
     "closed the app, deleted the file, or simply want it again. Never "
     "treat an action as already handled because it appears earlier in "
     "the conversation — run the tool again. "
+    "You cannot remember earlier sessions on your own — only what is in "
+    "front of you now. If the user asks what they told you before, what "
+    "they like, or what was said or decided in an earlier conversation, "
+    "call recall. An impression of having been told something is not "
+    "evidence that you were: if recall finds nothing, say you don't have "
+    "it. "
     "Your own knowledge stops at your training date. For anything that "
     "changes over time — weather, news, recent events, prices, sports "
     "results, the latest version of something — use web_search instead of "

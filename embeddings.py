@@ -107,13 +107,24 @@ def _pending_messages(conn, session_id=None):
     """
     Messages worth indexing that have no vector yet.
 
-    Only what a person actually said or was told: role='tool' rows hold
-    the "result not kept" placeholder rather than content, and the
-    assistant rows that merely carry a tool call have empty content, so
-    the length floor drops those too.
+    Only the user's own messages, for the same reason extraction ignores
+    the assistant's reply: what the user said is a record, what the model
+    said is sometimes an invention. Indexing replies made that invention
+    searchable — asked about a favourite food it had never been told, the
+    model answered "pizza", and that reply ("I remember you saying your
+    favorite food is pizza") would then have been the top match for the
+    next question about food, presented as evidence from history.
+
+    Nothing useful is lost: recall returns the messages either side of a
+    match, so the reply to a matching question is still shown. It just
+    cannot be the thing that matched, so a fabrication can never surface
+    itself.
+
+    The length floor also drops "ok" and "yes", which carry no meaning
+    worth searching for.
     """
     sql = ("SELECT id, content FROM messages WHERE embedding IS NULL "
-           "AND role IN ('user', 'assistant') AND length(content) >= ?")
+           "AND role = 'user' AND length(content) >= ?")
     params = [MIN_INDEX_CHARS]
     if session_id is not None:
         sql += " AND session_id = ?"
