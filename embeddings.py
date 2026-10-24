@@ -103,6 +103,61 @@ def similarity(a, b):
     return sum(x * y for x, y in zip(a, b))
 
 
+def _pending_messages(conn, session_id=None):
+    """
+    Messages worth indexing that have no vector yet.
+
+    Only what a person actually said or was told: role='tool' rows hold
+    the "result not kept" placeholder rather than content, and the
+    assistant rows that merely carry a tool call have empty content, so
+    the length floor drops those too.
+    """
+    sql = ("SELECT id, content FROM messages WHERE embedding IS NULL "
+           "AND role IN ('user', 'assistant') AND length(content) >= ?")
+    params = [MIN_INDEX_CHARS]
+    if session_id is not None:
+        sql += " AND session_id = ?"
+        params.append(session_id)
+    return conn.execute(sql + " ORDER BY id", params).fetchall()
+
+
+def index_pending(conn, session_id=None, progress=None):
+    """
+    Embed whatever has no vector yet and store it. With a session_id,
+    only that session's messages; without one, every session plus the
+    memories. Returns (indexed, failed).
+
+    Each batch is committed as it finishes, so an interruption — Ctrl+C,
+    Ollama restarting, the machine sleeping — keeps the work already
+    done and the next run picks up where this one stopped.
+    """
+    jobs = [("messages", row["id"], row["content"])
+            for row in _pending_messages(conn, session_id)]
+    if session_id is None:
+        jobs += [("memories", row["id"], row["content"]) for row in conn.execute(
+            "SELECT id, content FROM memories WHERE embedding IS NULL").fetchall()]
+
+    indexed = failed = 0
+    for start in range(0, len(jobs), BATCH_SIZE):
+        batch = jobs[start:start + BATCH_SIZE]
+        vectors = embed_many([text for _, _, text in batch])
+        if vectors is None:  # the whole call failed; leave them for next time
+            failed += len(batch)
+        else:
+            for (table, row_id, _), vector in zip(batch, vectors):
+                blob = pack(vector)
+                if blob is None:
+                    failed += 1
+                    continue
+                # table is one of two literals above, never outside input.
+                conn.execute(f"UPDATE {table} SET embedding = ? WHERE id = ?", (blob, row_id))
+                indexed += 1
+            conn.commit()
+        if progress:
+            progress(indexed, failed, len(jobs))
+    return indexed, failed
+
+
 def rank(query_vector, rows, limit, minimum=0.0):
     """
     Rows scored against a query vector, best first. Each row needs an
