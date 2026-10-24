@@ -73,6 +73,10 @@ def get_connection():
     for column in ("tool_calls", "tool_name"):
         if column not in existing:
             conn.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
+    # embedding: the message as a vector, for semantic recall (Stage 9).
+    # NULL means not indexed yet — nothing depends on it being present.
+    if "embedding" not in existing:
+        conn.execute("ALTER TABLE messages ADD COLUMN embedding BLOB")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,9 +85,14 @@ def get_connection():
             tags TEXT NOT NULL,
             source TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            embedding BLOB
         )
     """)
+    # Databases from before Stage 9 have `memories` without it.
+    memory_columns = {row["name"] for row in conn.execute("PRAGMA table_info(memories)")}
+    if "embedding" not in memory_columns:
+        conn.execute("ALTER TABLE memories ADD COLUMN embedding BLOB")
     # server:   which MCP server offered the tool (NULL if none did).
     # decision: auto / approved / denied / blocked / invalid — whether it was
     #           allowed to run ('invalid' = bad arguments, never offered).
