@@ -121,6 +121,19 @@ def _pending_messages(conn, session_id=None):
     return conn.execute(sql + " ORDER BY id", params).fetchall()
 
 
+def pending_count(conn, session_id=None):
+    """
+    How many items are waiting to be indexed — matching what
+    index_pending would actually do, memories included when no session
+    is named, so a caller can report the count honestly.
+    """
+    waiting = len(_pending_messages(conn, session_id))
+    if session_id is None:
+        waiting += conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE embedding IS NULL").fetchone()[0]
+    return waiting
+
+
 def index_pending(conn, session_id=None, progress=None):
     """
     Embed whatever has no vector yet and store it. With a session_id,

@@ -26,6 +26,7 @@ from ollama import chat, create
 import storage
 import memory
 import tools
+import embeddings
 
 BASE_MODEL = "qwen2.5:7b"
 NUM_CTX = 8192
@@ -124,6 +125,33 @@ def build_system_prompt(persona):
     add_list("directives", "Above all, follow these")
 
     return "\n".join(line for line in lines if line)
+
+
+def close_session(conn, session_id):
+    """
+    Index this session for recall, then mark it ended.
+
+    Indexing happens here rather than after each exchange so it costs
+    nothing while you are talking — on an 8GB card the embedding model
+    shares VRAM with the chat model, and a session is only worth
+    searching once it is over anyway.
+
+    Everything outstanding is indexed, not just this session: a session
+    that ended in a crash never got its turn, and this quietly catches
+    it up. Failure is reported and swallowed — not being able to index
+    is a lost convenience, never a reason you cannot quit.
+    """
+    try:
+        waiting = embeddings.pending_count(conn)
+        if waiting:
+            print(f"[Indexing {waiting} item(s) for recall...]", end="", flush=True)
+            indexed, failed = embeddings.index_pending(conn)
+            print(f" {indexed} done." + (
+                f" {failed} couldn't be indexed; run scripts/index_history.py to retry."
+                if failed else ""))
+    except Exception:
+        print("\n[Couldn't index this session. Run scripts/index_history.py later.]")
+    storage.end_session(conn, session_id)
 
 
 def start_history(persona, conn, session_id):
@@ -288,20 +316,20 @@ def main():
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
-            storage.end_session(conn, session_id)
+            close_session(conn, session_id)
             conn.close()
             tools.stop()
             break
 
         if user_input.lower() in ("exit", "quit"):
             print("Exiting.")
-            storage.end_session(conn, session_id)
+            close_session(conn, session_id)
             conn.close()
             tools.stop()
             break
 
         if user_input.lower() == "new":
-            storage.end_session(conn, session_id)
+            close_session(conn, session_id)
             session_id = storage.start_new_session(conn)
             history = start_history(persona, conn, session_id)
             print("[Started a new session.]\n")
