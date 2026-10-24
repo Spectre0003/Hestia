@@ -188,10 +188,19 @@ def rank(query_vector, rows, limit, minimum=0.0):
     "embedding" column; rows without one, or from another model, drop
     out. Returns a list of (score, row).
 
+    The query is normalised here rather than trusted to arrive that way.
+    Stored vectors are unit length because pack() makes them so, but a
+    vector straight from the model is whatever the model returned, and
+    mixing the two scales every score by the query's magnitude — which
+    would quietly invalidate the floors that callers compare against.
+
     Plain Python on purpose: a few hundred vectors compare in
     milliseconds. Past roughly ten thousand this is where numpy earns
     its place — a vector database still wouldn't.
     """
+    query_vector = unpack(pack(query_vector))
+    if query_vector is None:
+        return []
     scored = []
     for row in rows:
         vector = unpack(row["embedding"])

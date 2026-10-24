@@ -229,9 +229,14 @@ def upsert_memory(conn, content, tags, source, key=None):
 
 
 def get_all_memories(conn):
-    """Return every stored memory, for tag-matching against a message."""
+    """
+    Every stored memory, for matching against a message. `embedding` is
+    included so retrieval can rank by meaning; it is NULL until the
+    memory has been indexed (see embeddings.index_pending).
+    """
     return conn.execute(
-        "SELECT id, key, content, tags, source, created_at, updated_at FROM memories"
+        "SELECT id, key, content, tags, source, created_at, updated_at, embedding "
+        "FROM memories"
     ).fetchall()
 
 

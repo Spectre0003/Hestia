@@ -26,6 +26,7 @@ import re
 
 from ollama import chat
 
+import embeddings
 import storage
 
 REMEMBER_PREFIX = "remember"
@@ -370,20 +371,48 @@ def _tokenize(text):
     return tokens
 
 
+# Floor for ranking memories by meaning. Unlike recall's 0.80, this one
+# is not measured: it needs more than ALWAYS_INJECT_LIMIT memories to
+# matter at all, and there aren't that many yet. Lower than recall's on
+# purpose — a stored fact is one short sentence being matched against a
+# whole message, which scores lower than sentence against sentence, and
+# a missed fact here is quieter than a wrong one in recall. Measure it
+# the same way once the store is big enough to produce a distribution.
+MEMORY_MIN_SCORE = 0.55
+
+
 def retrieve_relevant_memories(conn, text):
     """
     Return memories to inject for this turn.
 
     While the store is small (<= ALWAYS_INJECT_LIMIT), returns
-    everything — keyword overlap can't bridge meaning, so filtering at
-    that size loses facts for no real benefit. Above that, falls back to
-    token-overlap matching against the memory's key, tags, and content,
-    strongest overlap first.
+    everything — filtering at that size loses facts for no real benefit.
+
+    Above that, ranks by meaning: this is what finally connects "what is
+    my job status" to a stored fact about being a cybersecurity student,
+    which the keyword matching it replaces could never do, since the two
+    share no words. Keyword overlap stays as a fallback for when the
+    embedding model can't be reached, so a stopped Ollama costs ranking
+    quality rather than memory itself.
+
+    Note this embeds the user's message on every turn once the store is
+    big enough — cheap next to the reply itself, but not free.
     """
     all_memories = storage.get_all_memories(conn)
 
     if len(all_memories) <= ALWAYS_INJECT_LIMIT:
         return all_memories
+
+    vector = embeddings.embed_one(text)
+    if vector is not None:
+        ranked = embeddings.rank(vector, all_memories, MAX_INJECTED_MEMORIES,
+                                 MEMORY_MIN_SCORE)
+        # An unindexed memory has no vector and can't be ranked, so it
+        # would be invisible until the next indexing run. Keyword matching
+        # below still finds those, so only take the semantic answer when
+        # everything has actually been indexed.
+        if all(row["embedding"] for row in all_memories):
+            return [row for _, row in ranked]
 
     query_tokens = _tokenize(text)
     if not query_tokens:
