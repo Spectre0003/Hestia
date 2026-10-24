@@ -4,6 +4,51 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 9 (v0.9) — Advanced memory — ✅ Complete
+
+**Goal:** find things by meaning rather than shared words. The stage as written was about memories, but the numbers argued otherwise: there was 1 stored memory and 222 messages across 28 sessions, and none of those messages was reachable at all — `--resume` loads the last 40 of one session and nothing else. So the stage became semantic recall over past conversations, with memories along for the ride.
+
+### 2026-10-25 — embeddings in SQLite, a recall tool, and two bugs worth the detour
+
+**Embeddings through Ollama (`nomic-embed-text`), and no vector database.** One `ollama pull`, no new Python dependency, and `ollama.embed()` was already in the installed client; `sentence-transformers` would have pulled in torch for a couple of gigabytes to do the same job worse on this hardware. The roadmap said "vector store" and that was deliberately not built: a few hundred vectors compare by cosine in plain Python in milliseconds, and `chromadb` or `faiss` would add a dependency, a second store to keep in sync, and a backup path `backup.py` doesn't cover. Vectors live as a BLOB column in the existing database. Past roughly ten thousand items the upgrade is numpy, still not a vector database.
+
+**Recall is a tool, not automatic injection.** Stage 4 established what happens when remembered things are pushed into every turn — they get worked into unrelated replies. Past conversations are bulkier and staler than facts, so injecting fragments of them would be worse. `recall` is called when it's relevant, is logged like any other tool, and costs nothing on turns that don't need it.
+
+**It is registered in `LOCAL_DATA_TOOLS`.** Recalled conversation is the most private thing here — everything the user has ever said. Without that line, Stage 8's exfiltration gate would have had a hole: recall, then search the web, and nothing would have stopped it. First real test of whether that control composes with tools added after it.
+
+**Indexing happens when a session ends**, not after each exchange: on an 8GB card the embedding model shares VRAM with the chat model, and a session is only worth searching once it's over. `close_session` indexes *everything* outstanding rather than just the session being left, so a session that ended in a crash is quietly caught up, which makes `scripts/index_history.py` a safety net rather than a chore. Failure there is reported and swallowed — not being able to index is a lost convenience, never a reason the user can't quit.
+
+**Only the user's own messages are indexed, and this was not the original design.** Asked about a favourite food it had never been told, the model answered "pizza" — twice, confidently, with no tool call at all. Harmless on its own. But those replies were rows in `messages`, and "I remember you saying your favorite food is pizza" would have been embedded at session end and become the top match for the next question about food, handed back as evidence from the user's own history.
+
+That is the Stage 4 feedback loop in a new place. The fix there was that facts about the user can only come from the user; the same reasoning simply hadn't been carried to what gets embedded. Indexing now covers user messages only — 91 of the 137 indexed rows were assistant replies, so this removed most of the index and all of the unreliable part. Nothing is lost, because `recall` returns the messages either side of a match: a reply still appears as context, it just can't be the thing that matched. A fabrication can no longer surface itself.
+
+**A similarity floor picked by measurement, after one picked by intuition failed.** The first floor was 0.35. Measured against every pair of this user's indexed messages, that admits **84% of all pairs** — not a filter at all. The median arbitrary pair scores 0.42; the 95th percentile 0.71. Embeddings weigh sentence shape heavily, so "my favourite food" matches "my favourite colour" at 0.74 while being about something else entirely, which is exactly how a question about food got a confident answer about colour. The floor is now 0.80, admitting ~3% of arbitrary pairs, with the measurement recorded next to it so it can be re-argued from evidence rather than re-guessed.
+
+A floor alone wasn't enough. Matches above the floor but under 0.88 are returned with a plain statement that none is a strong match. And the instruction — *results are the closest matches found, which is not the same as relevant; if they don't answer the question, say you don't have it* — went into the tool's **description**, not its result, because the standing rule is that tool output is data and never instructions. Keeping that line intact mattered more than the convenience of putting it where the model reads it last.
+
+**A normalisation bug that every test had hidden.** `rank()` compared the query against stored vectors that `pack()` had normalised to unit length, but `embed_one()` returns whatever the model returned. Mixing the two scales every score by the query's magnitude, which silently invalidates any floor compared against it. It stayed invisible because every test passed a query obtained from `unpack()` — already normalised. It surfaced only when a test used a deliberately oversized query and an unrelated question matched six memories. The query is now normalised inside `rank()` rather than at the call sites, so no caller can reintroduce it. In practice `nomic-embed-text` appears to return near-unit vectors, so the damage was latent rather than active — which is precisely why it survived so long.
+
+**Memory retrieval above the threshold now ranks by meaning**, which is what finally connects "what is my job status" to a stored fact about being a cybersecurity student — two phrases sharing no words, the exact failure documented as unfixable in Stage 4. Below `ALWAYS_INJECT_LIMIT` nothing changed. Keyword overlap remains as a fallback when the embedding model can't be reached, and an unindexed memory falls back to keyword rather than becoming invisible.
+
+**Verified**
+- 121 historical messages and the stored memory indexed; re-running indexes nothing; a scoped re-index touches one session.
+- `close_session` indexes, reports and ends the session; prints nothing when there is nothing to do; and when the embedder is made to throw, still ends the session and still lets the user quit.
+- Recall against real stored vectors returns the right matches with context, dates and scores, and suppresses near-duplicates.
+- The no-match, weak-match and empty-store paths all produce the message they should.
+- Memory retrieval verified on all five paths: unindexed, indexed, nothing-above-floor, embedder-unreachable, and small-store.
+- After the normalisation fix, scores stay within [-1, 1] no matter the query's magnitude.
+
+**Known limitations**
+- *The 0.80 floor rests on one real data point.* A genuine match scored 0.84 — above it, but by 0.04. A correct match phrased loosely could fall under, and the failure is silent. When `recall` reports "closest was 0.7x" about something that was definitely discussed, that is the number to lower it toward.
+- *The memory floor (0.55) is unmeasured*, because it only matters above 25 memories and there are 2. Measure it the same way once there is a distribution to measure.
+- *Above the threshold, every turn embeds the user's message* — cheap next to generating a reply, but not free.
+- *Recall doesn't cover the current session*, which isn't indexed until it ends. By design, but it looks like a bug the first time.
+- *Guidance against answering from a false memory is still only guidance.* The model now reads that it cannot remember earlier sessions without calling `recall`. That reduces the behaviour; nothing in a 7B model eliminates it.
+
+**Stage 9 (v0.9) milestone met:** past conversations are searchable by meaning, memories rank semantically once there are enough to need it, and what the model invents can no longer become what it remembers.
+
+---
+
 ## Stage 8 (v0.8) — Internet tools — ✅ Complete
 
 **Goal:** let Hestia search the web and read public pages, while deciding in code exactly what is allowed to leave the machine and treating everything that comes back as written by a stranger. The first stage where the README's "nothing leaves the machine" needed a precise exception rather than a blanket rule.

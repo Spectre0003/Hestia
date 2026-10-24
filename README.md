@@ -31,8 +31,8 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | 6 | v0.6 | Computer interaction | psutil, second MCP server, app allowlist | ✅ Complete |
 | 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | ✅ Complete |
 | 8 | v0.8 | Internet tools | Self-hosted SearXNG, fetch_page, network tier, `.env`/secrets | ✅ Complete |
-| 9 | v0.9 | Advanced memory | Local embeddings, vector store, RAG | ⏭️ Up next |
-| 10 | v1.0 | Actual assistant | Voice (whisper.cpp, Kokoro/XTTS), GUI, background service | Not started |
+| 9 | v0.9 | Advanced memory | nomic-embed-text via Ollama, vectors in SQLite, recall tool | ✅ Complete |
+| 10 | v1.0 | Actual assistant | Voice (whisper.cpp, Kokoro/XTTS), GUI, background service | ⏭️ Up next |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 
