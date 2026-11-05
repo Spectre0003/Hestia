@@ -6,7 +6,7 @@ This repo is the public build log: what got built, in what order, and why.
 
 ## Why local
 
-No conversation, memory, or tool call leaves the machine except through the two internet tools added in Stage 8, and then only what they send: a search query (to a self-hosted SearXNG on this machine, which passes it on to public search engines) or the address of a public page to read. Both run under a `network` permission tier that refuses them for the rest of any turn in which local data — files, repos, running processes — has been read, so none of it can leave in a query or an address. Nothing here depends on a cloud API or an account.
+No conversation, memory, or tool call leaves the machine except through the two internet tools added in Stage 8, and then only what they send: a search query (to a self-hosted SearXNG on this machine, which passes it on to public search engines) or the address of a public page to read. Both run under a `network` permission tier that refuses them for the rest of any turn in which local data — files, repos, running processes — has been read, so none of it can leave in a query or an address. Nothing here depends on a cloud API or an account. Voice is local too: the wake word, speech recognition and Hestia's own voice all run on this machine's CPU, audio is never saved, and muting the microphone closes it rather than ignoring it.
 
 ## Hardware
 
@@ -17,6 +17,25 @@ No conversation, memory, or tool call leaves the machine except through the two 
 | OS | Windows |
 
 Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_K_M-class quantized models as the sweet spot for this GPU.
+
+## Running Hestia
+
+Windows, Python 3.11+, and [Ollama](https://ollama.com) with the chat and memory models:
+
+```
+ollama pull qwen2.5:7b
+ollama pull nomic-embed-text
+python -m venv venv
+venv\Scripts\python -m pip install -r requirements.txt
+venv\Scripts\python scripts\download_models.py
+```
+
+Then either:
+
+- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Hey Jarvis"** and then what you need — replies to things you say are spoken. Approvals are always a click, never your voice.
+- `venv\Scripts\python chat.py` — the same Hestia in a terminal.
+
+Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example` files), and `docker compose -f searxng/compose.yaml up -d` for web search.
 
 ## Roadmap
 
@@ -32,7 +51,7 @@ Hardware shapes model choice throughout — most stages plan around 7B–8B, Q4_
 | 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | ✅ Complete |
 | 8 | v0.8 | Internet tools | Self-hosted SearXNG, fetch_page, network tier, `.env`/secrets | ✅ Complete |
 | 9 | v0.9 | Advanced memory | nomic-embed-text via Ollama, vectors in SQLite, recall tool | ✅ Complete |
-| 10 | v1.0 | Actual assistant | Voice (whisper.cpp, Kokoro/XTTS), GUI, background service | ⏭️ Up next |
+| 10 | v1.0 | Actual assistant | Qt window + tray, wake word (openWakeWord), faster-whisper, Kokoro, start with Windows | ✅ Complete |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 

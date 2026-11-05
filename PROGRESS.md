@@ -4,6 +4,45 @@ Reverse-chronological build log for Hestia. Each entry is one working session.
 
 ---
 
+## Stage 10 (v1.0) — Actual assistant — ✅ Complete
+
+**Goal:** turn a terminal program you start and quit into something that is always there: a window, a tray icon, starting with Windows, and voice — a wake word, speech recognition and a voice of her own — all on this machine.
+
+### 2026-11-05 — an engine split, a Qt window and tray, Kokoro and Whisper on the CPU, and a wake word
+
+**First, the engine.** Everything Hestia does was inside `chat.py`'s `input()`/`print()` loop. It moved, unchanged in behaviour, into `engine.py`: a `Session` that owns the persona, model, tool servers, history and commands, and talks to any front end through five hooks — `text`, `tool`, `notice`, `approve`, `confirm`. Startup problems raise `StartupError` instead of exiting, because a window can't usefully print and quit. `chat.py` is now a thin terminal front end; the tests that covered it pass through the engine, and a live terminal run behaves exactly as before. `personality.yaml` is now found relative to the project, like `data/`, since Hestia started at login has an arbitrary working directory.
+
+**An always-on Hestia never exits, so sessions end by idleness.** After 20 minutes without a message the session is indexed for recall and a new one starts — Stage 9's indexing used to run on exit, which an always-on Hestia never reaches.
+
+**The window (`gui.py`, Qt via PySide6-Essentials).** The engine runs on its own worker thread, which owns the database and tool servers, so the window never freezes and nothing touches SQLite across threads. Replies stream into a Markdown transcript rendered with HTML disabled — nothing a model or a web page writes is ever rendered as markup — and only http/https links open when clicked. The approval dialog shows every argument whole, with control and invisible formatting characters spelled out, carries Stage 8's web-content warning, and has **Deny** as the default: Esc and closing the dialog both deny, and if Hestia quits while one is open, the answer is No, never a hang.
+
+**Always there.** Closing the window hides it to a tray icon (drawn in code, no image file): Open, Mute microphone, Start with Windows, Quit. A second launch finds the first through a local socket, asks it to show itself and exits (measured: 1.5 s, mostly Python starting). "Start with Windows" is a shortcut in the user's own Startup folder, running `pythonw` so no console appears — per-user, no admin.
+
+**Voice out (Kokoro, CPU).** Replies are cleaned for speech — code blocks become "I've put some code on screen", links and Markdown are never read out — and split into sentences while they stream, so she starts talking before the reply is finished. One thread makes audio while another plays, so there's no gap between sentences. Replies to things you *say* are spoken; typed ones stay text unless "Speak all replies" is on. Esc, a new message, or the wake word cuts her off. Measured: 2.8× faster than real time; the first word took 5.5 s cold, so Kokoro now loads in the background at startup — 0.33 s after that.
+
+**Voice in (openWakeWord + faster-whisper, CPU).** The microphone is read in 80 ms frames; after the wake word, recording runs until 0.8 s of quiet (Silero VAD), at most 15 s, and gives up if nothing is said within 5 s. Whisper `base.en` turns it into text, which goes to the engine as a spoken turn. "Stop" or "never mind" just hushes her. Speech that arrives while a turn is running is dropped, not queued — so a spoken "yes" can never answer an approval dialog. Muting closes the microphone stream rather than ignoring it, and audio is never written anywhere.
+
+**No PyTorch.** Speech runs on onnxruntime and CTranslate2. The packages added ~700 MB to the venv and the models ~265 MB (`scripts/download_models.py` fetches them into gitignored `models/`). The wake phrase is openWakeWord's built-in **"Hey Jarvis"** — there's no pretrained "Hey Hestia"; one can be trained with openWakeWord's notebook and dropped in by changing `WAKE_MODEL` in `voice.py`.
+
+**Bugs found on the way.**
+- *Certificates:* the baseline test suite failed before any v1.0 work — `fetch_page` couldn't verify example.com. Python's SSL only trusts root certificates already in the Windows store; Windows fetches newer ones (here "SSL.com TLS ECC Root CA 2022") the first time its own verifier meets them, which curl had just done. `fetch_page` now verifies through Windows itself (`truststore`).
+- *`launch_application` (Stage 6):* classic programs it opened were killed when Hestia exited — the MCP client puts every server in a kill-on-close job. It now opens targets through `explorer.exe` started via WMI, the same launcher as Stage 7's VS Code tool, now shared in `servers/launcher.py`. Reproduced with a `.lnk` in a kill-on-close job, fixed, tested.
+- *Single instance:* a second launch started a second Hestia in the live test, because `hand_off(name=INSTANCE_NAME)` froze the name at import. Read at call time now; a test proves the old code fails it.
+- *Final review:* an unexpected engine error left the window stuck on "Thinking…" (there's no console to show it in the background); one bad audio frame stopped listening for good. Both fixed with tests.
+
+**Measured.** Wake word caught 20/20 across 10 synthetic voices and two speeds; 0 false triggers in 3.7 minutes of everyday speech including near-words ("hey there", "Jars", "Harvey"). Real microphone: 249/250 frames in 20 s; idle listening 0.2% of the CPU. From the end of a spoken question to Hestia's first word: ~3.8 s (0.8 s silence detection, 0.42 s Whisper, ~2.6 s model and first sentence). GPU 6.4 of 8 GB system-wide with everything loaded; ~1.2 GB RAM for Hestia and her five tool servers. Tool choice with 18 tools: 52/57 (91%). A full spoken loop through the real app — wake word, "what time is it right now?", `get_current_time`, a spoken answer — worked end to end.
+
+**Known limitations**
+- *The wake-word numbers use synthetic voices* fed in digitally; a real voice, microphone and room are the real test.
+- *Bare-name, full-path and URI entries in `apps.yaml` through `explorer.exe`* weren't checked live (the check was blocked: it force-closed apps by name); `.lnk` entries are covered by a test.
+- *Current-information questions* still often get answered from memory (Stage 8's limitation, unchanged).
+- *Windows privacy settings* can block microphone access for desktop apps; Hestia then says the wake word is off.
+- *Name colours in the transcript* are the same for both speakers: distinguishing them would need HTML, which the transcript deliberately never renders.
+
+**Stage 10 (v1.0) milestone met:** Hestia runs as a windowed, tray-resident app that can start with Windows, listens for a wake word, answers out loud, and keeps every safety rule from earlier stages — approvals are clicks, never voice — with nothing leaving the machine that Stage 8 didn't already allow.
+
+---
+
 ## Stage 9 (v0.9) — Advanced memory — ✅ Complete
 
 **Goal:** find things by meaning rather than shared words. The stage as written was about memories, but the numbers argued otherwise: there was 1 stored memory and 222 messages across 28 sessions, and none of those messages was reachable at all — `--resume` loads the last 40 of one session and nothing else. So the stage became semantic recall over past conversations, with memories along for the ride.
