@@ -21,11 +21,11 @@ import re
 import shutil
 import subprocess
 
-import pythoncom
-import win32com.client
 import yaml
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+
+import launcher
 
 server = MCPServer("dev_tools", log_level="WARNING")
 
@@ -227,25 +227,8 @@ def _code_exe():
     return next((path for path in candidates if os.path.isfile(path)), None)
 
 
-def _launch(argv):
-    """
-    Start a program so it outlives this server. The MCP client runs each
-    server inside a Windows job that kills everything in it when Hestia
-    exits, so an ordinary child process (subprocess, os.startfile) would
-    die with it. WMI creates the process itself, outside that job, and
-    with the user's normal environment rather than the ~12 variables this
-    server was given. COM is set up per call: tools run on worker threads.
-    """
-    pythoncom.CoInitialize()
-    try:
-        processes = win32com.client.GetObject("winmgmts:").Get("Win32_Process")
-        params = processes.Methods_("Create").InParameters.SpawnInstance_()
-        params.CommandLine = subprocess.list2cmdline(argv)
-        result = processes.ExecMethod_("Create", params)
-    finally:
-        pythoncom.CoUninitialize()
-    if result.ReturnValue != 0:
-        raise ToolError(f"Windows refused to start it (WMI error {result.ReturnValue}).")
+# Shared with system_tools; see launcher.py for why programs start via WMI.
+_launch = launcher.launch
 
 
 @server.tool(description=(

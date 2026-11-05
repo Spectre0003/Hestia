@@ -28,6 +28,8 @@ import yaml
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+import launcher
+
 # WARNING, not the default INFO: this process's stderr goes to a log file,
 # and per-request INFO lines would bury anything useful.
 server = MCPServer("system_tools", log_level="WARNING")
@@ -238,18 +240,19 @@ def launch_application(name: str) -> str:
         )
 
     display, target = entry
-    try:
-        # Windows handles .exe, .lnk and URI protocols alike here. The
-        # target comes from apps.yaml, never from the model, and nothing
-        # is appended to it — no arguments reach the launched program.
-        os.startfile(target)
-    except AttributeError:
-        raise ToolError("Opening applications is only supported on Windows.")
-    except OSError as e:
+    # explorer.exe opens .exe, .lnk, URI protocols and shell: targets alike,
+    # and started through launcher (WMI) it's outside the job the MCP client
+    # kills when Hestia exits — os.startfile left classic programs dying
+    # with Hestia. The target comes from apps.yaml, never from the model, and
+    # nothing is appended to it: no arguments reach the launched program.
+    is_path = bool(os.path.splitdrive(target)[0]) or target.startswith("\\\\")
+    if is_path and not os.path.exists(target):
+        # Explorer given a missing path quietly opens Documents instead.
         raise ToolError(
-            f"Couldn't open {display}: {e.strerror or e}. "
-            f"Its entry in apps.yaml may point somewhere that no longer exists."
+            f"Couldn't open {display}: its entry in apps.yaml points somewhere "
+            f"that no longer exists ({target})."
         )
+    launcher.launch(["explorer.exe", target])
     return f"Opened {display}."
 
 

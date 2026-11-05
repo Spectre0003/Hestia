@@ -38,5 +38,71 @@ class WslSummaryTest(unittest.TestCase):
         self.assertIn("WSL: ", system_tools.get_system_info())
 
 
+# Like dev_tools' launch test: a helper inside a kill-on-close Windows job
+# (what the MCP client puts every server in), with the server's stripped
+# environment, opening a .lnk entry from apps.yaml on a worker thread, then
+# closing the job. The shortcut points at a harmless sleeper that reports
+# its pid; the test checks the sleeper outlived the job.
+_APP_HELPER = r'''
+import os, sys, threading, time
+import win32api, win32job
+repo, shortcut = sys.argv[1], sys.argv[2]
+sys.path.insert(0, os.path.join(repo, "servers"))
+job = win32job.CreateJobObject(None, "")
+info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+win32job.AssignProcessToJobObject(job, win32api.GetCurrentProcess())
+import system_tools
+system_tools.APPS = {"sleeper": ("sleeper", shortcut)}
+worker = threading.Thread(target=system_tools.launch_application, args=("sleeper",))
+worker.start(); worker.join()
+time.sleep(5)
+win32api.CloseHandle(job)
+'''
+
+
+class LaunchApplicationTest(unittest.TestCase):
+    def test_an_opened_app_outlives_hestia(self):
+        import os
+        import psutil
+        import win32com.client
+        folder = support.temp_folder(self)
+        report = os.path.join(folder, "report.txt")
+        sleeper = support.write(folder, "sleeper.py",
+                                "import os, sys, time\n"
+                                "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+                                "time.sleep(60)\n")
+        shortcut = os.path.join(folder, "sleeper.lnk")
+        link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(shortcut)
+        link.TargetPath = support.sys.executable
+        link.Arguments = f'"{sleeper}" "{report}"'
+        link.WindowStyle = 7  # minimised
+        link.Save()
+        helper = support.write(folder, "helper.py", _APP_HELPER)
+        keep = ("APPDATA", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT",
+                "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERNAME", "USERPROFILE")
+        support.subprocess.run([support.sys.executable, helper, support.REPO, shortcut],
+                               env={k: os.environ[k] for k in keep if k in os.environ},
+                               timeout=60, capture_output=True)
+        for _ in range(20):
+            if os.path.exists(report) and os.path.getsize(report):
+                break
+            support.time.sleep(0.5)
+        self.assertTrue(os.path.exists(report), "the app never started")
+        with open(report) as f:
+            pid = int(f.read())
+        self.addCleanup(lambda: psutil.pid_exists(pid) and psutil.Process(pid).kill())
+        self.assertTrue(psutil.pid_exists(pid), "the app was closed when Hestia's server exited")
+
+    def test_a_missing_file_target_is_reported_not_opened(self):
+        from mcp.server.mcpserver.exceptions import ToolError
+        self.addCleanup(setattr, system_tools, "APPS", system_tools.APPS)
+        system_tools.APPS = {"gone": ("gone", r"C:\no\such\program.exe")}
+        with self.assertRaises(ToolError) as caught:
+            system_tools.launch_application("gone")
+        self.assertIn("no longer exists", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
