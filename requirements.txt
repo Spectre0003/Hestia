@@ -14,3 +14,10 @@ mcp==2.2.0
 # HTTPS checked by Windows' own verifier (Stage 8 fetch_page); mcp pulls it
 # in too, but web_tools uses it directly.
 truststore>=0.9
+# v1.0 front ends (Stage 10). No PyTorch anywhere: speech runs on onnxruntime
+# and CTranslate2, on the CPU, so the GPU stays for the chat model.
+PySide6-Essentials>=6.8      # GUI, tray icon, single-instance check
+openwakeword>=0.6            # wake word
+faster-whisper>=1.1          # speech to text
+kokoro-onnx>=0.6             # text to speech
+sounddevice>=0.5             # microphone and speakers

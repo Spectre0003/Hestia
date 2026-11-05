@@ -22,6 +22,9 @@ apps.yaml
 # same reason. repos.yaml.example shows the format.
 repos.yaml
 
+# Downloaded voice models (from Stage 10): scripts/download_models.py fetches them.
+models/
+
 # OS/editor cruft
 .vscode/
 .idea/
