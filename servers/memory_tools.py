@@ -2,7 +2,7 @@
 Hestia — recall tool server (Stage 9 / v0.9)
 
 Searches past conversations by meaning. Everything said in earlier
-sessions is embedded when that session ends (see chat.close_session);
+sessions is embedded when that session ends (see engine.Session._end_session);
 this finds the closest matches to a question and hands back the
 surrounding exchange so the answer has context rather than one stray
 line.

@@ -7,6 +7,7 @@ import support
 from support import fake_tool, temp_db
 
 import chat  # noqa: E402
+import engine  # noqa: E402
 import tools  # noqa: E402
 
 
@@ -73,7 +74,7 @@ class NetworkTierTest(unittest.TestCase):
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed), \
                 support.mock_input("y"):
-            allowed = chat.confirm_tool("Hestia", "write_file", {"path": "a.txt"}, after_web=True)
+            allowed = chat.TerminalUI("Hestia").approve("write_file", {"path": "a.txt"}, after_web=True)
         self.assertTrue(allowed)
         self.assertIn("web content", printed.getvalue())
 
@@ -85,20 +86,21 @@ class RunTurnWiringTest(unittest.TestCase):
         fake_tool(self, "hestia_core", "read_file", "secret notes")
 
     def run_turn(self, *rounds, answer="Done."):
-        """Run chat.run_turn against a stand-in model; returns what it printed."""
+        """Run engine.run_turn against a stand-in model, shown in the terminal UI; returns what it printed."""
         script = list(rounds)
 
-        def stream_reply(messages, offer_tools=True):
+        def stream_reply(messages, ui, offer_tools=True):
             if script and offer_tools:
                 return "", [NS(function=NS(name=n, arguments={})) for n in script.pop(0)]
             return answer, []
 
-        self.addCleanup(setattr, chat, "stream_reply", chat.stream_reply)
-        chat.stream_reply = stream_reply
+        self.addCleanup(setattr, engine, "stream_reply", engine.stream_reply)
+        engine.stream_reply = stream_reply
+        ui = chat.TerminalUI()
+        ui.approve = lambda name, arguments, after_web=False: True
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
-            chat.run_turn(self.conn, self.session, [{"role": "user", "content": "hi"}],
-                          lambda name, arguments, after_web=False: True)
+            engine.run_turn(self.conn, self.session, [{"role": "user", "content": "hi"}], ui)
         return printed.getvalue()
 
     def test_links_with_no_lookup_this_turn_get_a_note(self):
