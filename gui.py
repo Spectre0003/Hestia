@@ -1,0 +1,397 @@
+"""
+Hestia — window front end (Stage 10 / v1.0)
+
+The desktop way to talk to Hestia: a chat window (PySide6 / Qt). The
+engine (engine.py) runs on its own worker thread, which owns the Session,
+the database and the tool servers, so the window never freezes while
+Hestia thinks or a tool runs, and nothing touches the database across
+threads.
+
+The engine's UI object is a Bridge: it forwards everything to the window
+through Qt signals. Approval is the delicate part — the worker must wait
+for your click without blocking the window, and if Hestia quits while a
+dialog is open, the answer is Deny, never a hang and never an approval.
+
+    venv\\Scripts\\pythonw gui.py
+"""
+
+import json
+import sys
+import threading
+import unicodedata
+
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal, Slot
+from PySide6.QtGui import QAction, QDesktopServices, QTextDocument
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QPlainTextEdit, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
+)
+
+import engine
+
+IDLE_CHECK_MS = 60_000
+RENDER_EVERY_MS = 50  # streaming re-renders are batched, not one per token
+
+# Applied to what the transcript's Markdown renders to. Colours read on both
+# Windows light and dark mode.
+TRANSCRIPT_STYLE = """
+p { margin-top: 2px; margin-bottom: 12px; line-height: 135%; }
+strong { color: #4f8fd6; }
+em { color: #8a8f98; }
+code { font-family: Consolas, monospace; color: #8a8f98; }
+pre { font-family: Consolas, monospace; background-color: rgba(128, 128, 128, 30); padding: 8px; }
+"""
+
+
+def _visible(value):
+    """
+    A tool argument as it should be shown for approval: JSON, so control
+    characters come out as \\u escapes, plus invisible formatting characters
+    (right-to-left marks and the like), which JSON leaves alone and which
+    can make text read differently from what it is.
+    """
+    text = json.dumps(value, ensure_ascii=False, indent=2)
+    return "".join(f"\\u{ord(ch):04x}" if unicodedata.category(ch) == "Cf" else ch for ch in text)
+
+
+class ApprovalDialog(QDialog):
+    """Asks before a write-tier tool runs. Deny is the default; Esc and closing both deny."""
+
+    def __init__(self, persona, tool_name, arguments, after_web, parent=None):
+        super().__init__(parent)
+        self.tool_name = tool_name
+        self.setWindowTitle(f"{persona} wants to run {tool_name}")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"<b>{persona}</b> wants to run <b>{tool_name}</b> with:"))
+
+        self.warning = QLabel("Asked for after reading web content this turn — make sure "
+                              "it's what YOU asked for, not something a page told Hestia to do.")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color: #c0392b; font-weight: bold;")
+        self.warning.setVisible(after_web)
+        layout.addWidget(self.warning)
+
+        self.arguments_view = QPlainTextEdit(
+            "\n".join(f"{key}: {_visible(value)}" for key, value in arguments.items()) or "(no arguments)")
+        self.arguments_view.setReadOnly(True)
+        layout.addWidget(self.arguments_view)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.allow_button = QPushButton("Allow")
+        self.deny_button = QPushButton("Deny")
+        self.allow_button.setAutoDefault(False)
+        self.deny_button.setDefault(True)
+        self.allow_button.clicked.connect(self.accept)
+        self.deny_button.clicked.connect(self.reject)
+        buttons.addWidget(self.deny_button)
+        buttons.addWidget(self.allow_button)
+        layout.addLayout(buttons)
+        self.deny_button.setFocus()
+
+
+class Bridge(QObject):
+    """
+    The engine's UI object. Its methods are called on the worker thread;
+    each one emits a signal the window handles on the main thread.
+    approve/confirm then wait for answer(), or for shutdown().
+    """
+    text_received = Signal(str)
+    tool_started = Signal(str)
+    notice_posted = Signal(str)
+    approval_requested = Signal(str, object, bool)
+    question_asked = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._answered = threading.Event()
+        self._answer = False
+        self._closing = False
+
+    # The engine's UI protocol (worker thread).
+    def text(self, token):
+        self.text_received.emit(token)
+
+    def tool(self, name):
+        self.tool_started.emit(name)
+
+    def notice(self, message):
+        self.notice_posted.emit(message)
+
+    def approve(self, name, arguments, after_web=False):
+        return self._ask(self.approval_requested, name, arguments, after_web)
+
+    def confirm(self, question):
+        return self._ask(self.question_asked, question)
+
+    def _ask(self, signal, *args):
+        if self._closing:
+            return False
+        self._answer = False
+        self._answered.clear()
+        signal.emit(*args)
+        self._answered.wait()
+        return self._answer and not self._closing
+
+    # Main thread.
+    def answer(self, value):
+        self._answer = bool(value)
+        self._answered.set()
+
+    def shutdown(self):
+        """Hestia is quitting: whatever is still being asked is answered No."""
+        self._closing = True
+        self._answer = False
+        self._answered.set()
+
+
+class Worker(QObject):
+    """Owns the engine Session; every slot runs on the worker thread."""
+    ready = Signal(str, list)
+    failed = Signal(str)
+    done = Signal(str, bool)
+
+    def __init__(self, bridge, session_factory):
+        super().__init__()
+        self.bridge = bridge
+        self.session_factory = session_factory
+        self.session = None
+
+    @Slot()
+    def start(self):
+        try:
+            self.session = self.session_factory(self.bridge)
+        except engine.StartupError as e:
+            self.failed.emit(str(e))
+            return
+        self.ready.emit(self.session.name, list(self.session.problems))
+
+    @Slot(str)
+    def handle(self, text):
+        output, was_command = self.session.handle(text)
+        self.done.emit(output, was_command)
+
+    @Slot()
+    def check_idle(self):
+        if self.session:
+            self.session.close_if_idle()
+
+    @Slot()
+    def close(self):
+        if self.session:
+            self.session.close()
+        QThread.currentThread().quit()
+
+
+class ChatWindow(QMainWindow):
+    """The chat window. The engine is started on a worker thread as soon as it's built."""
+    _start_engine = Signal()
+    _submit = Signal(str)
+    _check_idle = Signal()
+    _stop_engine = Signal()
+
+    def __init__(self, session_factory=engine.Session):
+        super().__init__()
+        self.name = "Hestia"
+        self.ready = False
+        self.busy = False
+        self.transcript = []  # (kind, text): you / hestia / notice / output
+        self.setWindowTitle("Hestia")
+        self.resize(760, 640)
+
+        self.transcript_view = QTextBrowser()
+        self.transcript_view.setOpenLinks(False)
+        # Styles what the Markdown renders to; the model's text never gets to add markup.
+        self.transcript_view.document().setDefaultStyleSheet(TRANSCRIPT_STYLE)
+        self.transcript_view.document().setDocumentMargin(14)
+        font = self.transcript_view.font()
+        font.setPointSizeF(font.pointSizeF() + 1.5)
+        self.transcript_view.setFont(font)
+        self.transcript_view.anchorClicked.connect(self.open_link)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Message Hestia — or type memories, tools, new, remember …, forget …")
+        self.input.returnPressed.connect(self.send)
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.send)
+        row = QHBoxLayout()
+        row.addWidget(self.input)
+        row.addWidget(self.send_button)
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.addWidget(self.transcript_view)
+        layout.addLayout(row)
+        self.setCentralWidget(central)
+
+        toolbar = self.addToolBar("Hestia")
+        toolbar.setMovable(False)
+        for label, command in (("New session", "new"), ("Memories", "memories"), ("Tool log", "tools")):
+            action = QAction(label, self)
+            action.triggered.connect(lambda checked=False, c=command: self.send(c))
+            toolbar.addAction(action)
+        self.toolbar = toolbar
+
+        self._render_timer = QTimer(self, singleShot=True, interval=RENDER_EVERY_MS)
+        self._render_timer.timeout.connect(self._render)
+        self._set_busy(True, "Starting Hestia…")
+
+        self.bridge = Bridge()
+        self.bridge.text_received.connect(self._on_text)
+        self.bridge.tool_started.connect(self._on_tool)
+        self.bridge.notice_posted.connect(self._on_notice)
+        self.bridge.approval_requested.connect(self._on_approval)
+        self.bridge.question_asked.connect(self._on_question)
+
+        self.thread = QThread(self)
+        self.worker = Worker(self.bridge, session_factory)
+        self.worker.moveToThread(self.thread)
+        self._start_engine.connect(self.worker.start)
+        self._submit.connect(self.worker.handle)
+        self._check_idle.connect(self.worker.check_idle)
+        self._stop_engine.connect(self.worker.close)
+        self.worker.ready.connect(self._on_ready)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.done.connect(self._on_done)
+        self.thread.start()
+        self._start_engine.emit()
+
+        self._idle_timer = QTimer(self, interval=IDLE_CHECK_MS)
+        self._idle_timer.timeout.connect(self._check_idle.emit)
+        self._idle_timer.start()
+
+    # ---- sending -------------------------------------------------------
+    def send(self, text=None):
+        text = (self.input.text() if text is None else text).strip()
+        if not text or not self.ready or self.busy:
+            return
+        self.input.clear()
+        if text.lower() not in ("memories", "tools", "new"):
+            self.transcript.append(("you", text))
+        self._render()
+        self._set_busy(True, "Thinking…")
+        self._submit.emit(text)
+
+    def _set_busy(self, busy, status=""):
+        self.busy = busy
+        self.input.setEnabled(not busy)
+        self.send_button.setEnabled(not busy)
+        self.statusBar().showMessage(status or ("Ready" if not busy else ""))
+        if not busy:
+            self.input.setFocus()
+
+    # ---- what the engine sends (main thread) ----------------------------
+    def _hestia_entry(self):
+        if not self.transcript or self.transcript[-1][0] != "hestia":
+            self.transcript.append(("hestia", ""))
+        return len(self.transcript) - 1
+
+    @Slot(str)
+    def _on_text(self, token):
+        index = self._hestia_entry()
+        self.transcript[index] = ("hestia", self.transcript[index][1] + token)
+        self._render_timer.start()
+
+    @Slot(str)
+    def _on_tool(self, name):
+        index = self._hestia_entry()
+        self.transcript[index] = ("hestia", self.transcript[index][1] + f"`[tool: {name}]` ")
+        self.statusBar().showMessage(f"Running {name}…")
+        self._render_timer.start()
+
+    @Slot(str)
+    def _on_notice(self, message):
+        self.transcript.append(("notice", message))
+        self._render_timer.start()
+
+    @Slot(str, object, bool)
+    def _on_approval(self, tool_name, arguments, after_web):
+        self.show_window()
+        dialog = ApprovalDialog(self.name, tool_name, arguments, after_web, parent=self)
+        self.bridge.answer(dialog.exec() == QDialog.Accepted)
+
+    @Slot(str)
+    def _on_question(self, question):
+        self.show_window()
+        answer = QMessageBox.question(self, self.name, question,
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        self.bridge.answer(answer == QMessageBox.Yes)
+
+    @Slot(str, list)
+    def _on_ready(self, name, problems):
+        self.name = name
+        self.setWindowTitle(name)
+        for problem in problems:
+            self.transcript.append(("notice", f"[Tool server problem — {problem}. Its tools are unavailable this run.]"))
+        self.ready = True
+        self._render()
+        self._set_busy(False)
+
+    @Slot(str)
+    def _on_failed(self, error):
+        self.transcript.append(("notice", f"[Hestia couldn't start: {error}]"))
+        self._render()
+        self.statusBar().showMessage("Couldn't start — see the message above.")
+
+    @Slot(str, bool)
+    def _on_done(self, output, was_command):
+        if was_command and output:
+            self.transcript.append(("output", output))
+        self._render()
+        self._set_busy(False)
+
+    # ---- display --------------------------------------------------------
+    def _render(self):
+        self._render_timer.stop()
+        blocks = []
+        for kind, text in self.transcript:
+            if kind == "you":
+                blocks.append(f"**You:** {text}")
+            elif kind == "hestia":
+                blocks.append(f"**{self.name}:** {text}")
+            elif kind == "notice":
+                blocks.append(f"*{text}*")
+            else:
+                blocks.append(f"```\n{text}\n```")
+        # NoHTML: replies and web content are shown as text, never as markup.
+        self.transcript_view.document().setMarkdown(
+            "\n\n".join(blocks),
+            QTextDocument.MarkdownFeature(QTextDocument.MarkdownDialectGitHub | QTextDocument.MarkdownNoHTML))
+        bar = self.transcript_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    @Slot(QUrl)
+    def open_link(self, url):
+        """Only web links open, in the browser; file:, javascript: and the rest do nothing."""
+        if url.scheme() in ("http", "https"):
+            QDesktopServices.openUrl(url)
+
+    def show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    # ---- quitting -------------------------------------------------------
+    def shutdown(self):
+        """Close the session (indexing it) and stop the worker; a pending approval is denied."""
+        if not self.thread.isRunning():
+            return
+        self._idle_timer.stop()
+        self.bridge.shutdown()
+        self._stop_engine.emit()
+        self.thread.wait(30_000)
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Hestia")
+    window = ChatWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
