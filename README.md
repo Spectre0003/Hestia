@@ -32,7 +32,7 @@ venv\Scripts\python scripts\download_models.py
 
 Then either:
 
-- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Hey Jarvis"** and then what you need — replies to things you say are spoken. Approvals are always a click, never your voice.
+- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** and then what you need — replies to things you say are spoken. Approvals are always a click, never your voice.
 - `venv\Scripts\python chat.py` — the same Hestia in a terminal.
 
 Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example` files), and `docker compose -f searxng/compose.yaml up -d` for web search.
@@ -51,7 +51,7 @@ Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example`
 | 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | ✅ Complete |
 | 8 | v0.8 | Internet tools | Self-hosted SearXNG, fetch_page, network tier, `.env`/secrets | ✅ Complete |
 | 9 | v0.9 | Advanced memory | nomic-embed-text via Ollama, vectors in SQLite, recall tool | ✅ Complete |
-| 10 | v1.0 | Actual assistant | Qt window + tray, wake word (openWakeWord), faster-whisper, Kokoro, start with Windows | ✅ Complete |
+| 10 | v1.0 | Actual assistant | Qt window + tray, wake phrase "Rise Hestia", faster-whisper, Kokoro, start with Windows | ✅ Complete |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 

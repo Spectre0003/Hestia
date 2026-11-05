@@ -227,47 +227,66 @@ def voice_models_present():
 
 # ---------------------------------------------------------------- listening
 WAKE_DIR = os.path.join(MODELS, "wakeword")
-WAKE_MODEL = os.path.join(WAKE_DIR, "hey_jarvis_v0.1.onnx")  # swap for a custom "hey hestia" model
-WAKE_PHRASE = "Hey Jarvis"
+VAD_MODEL = os.path.join(WAKE_DIR, "silero_vad.onnx")
 WHISPER_DIR = os.path.join(MODELS, "whisper")
 WHISPER_MODEL = "base.en"
 
+# The wake phrase is heard by Whisper itself: openWakeWord has no ready-made
+# "Rise Hestia" model, and training one needs a Colab run. Whisper alone
+# hears it as "Rise Hester"/"Hestra"/"Hesture"; told the phrase in advance
+# (the prompt), it heard "Rise, Hestia" in 20/20 synthetic voices.
+WAKE_PHRASE = "Rise Hestia"
+WAKE_PROMPT = "Rise, Hestia."
+_WAKE = re.compile(r"^\W*(?:a?rise|rice)\W+(?:hestia|hester|hestra|hesture|hestya|estia)\b\W*(.*)$",
+                   re.IGNORECASE | re.DOTALL)
+
 RATE = 16_000
-FRAME = 1280                  # 80 ms: what openWakeWord expects per prediction
-WAKE_THRESHOLD = 0.5
+FRAME = 1280                  # 80 ms of audio per step
 SPEECH_THRESHOLD = 0.5
+WAKE_PAUSE_SECONDS = 0.4      # a pause this long ends a stretch of speech to check for the phrase
+WAKE_CHECK_SECONDS = 2.0      # only a stretch's first 2 s are transcribed to look for it
+PRE_ROLL_FRAMES = 3           # keep 240 ms before speech starts, so "Rise" isn't clipped
 END_SILENCE_SECONDS = 0.8     # this long quiet after speaking ends the request
-WAIT_FOR_SPEECH_SECONDS = 5   # said the wake word, then nothing: give up
+WAIT_FOR_SPEECH_SECONDS = 5   # said the wake phrase, then nothing: give up
 MAX_RECORD_SECONDS = 15
 _FRAMES_PER_SECOND = RATE / FRAME
-_WAKE_ECHO = re.compile(r"^\W*(hey\W+)?(jarvis|jarvis's)\W*", re.IGNORECASE)
+
+
+def split_wake(text):
+    """What was said after the wake phrase ('' if nothing), or None if it isn't there."""
+    match = _WAKE.match(text or "")
+    return match.group(1).strip() if match else None
 
 
 def listening_models_present():
-    return os.path.exists(WAKE_MODEL) and os.path.isdir(WHISPER_DIR)
+    return os.path.exists(VAD_MODEL) and os.path.isdir(WHISPER_DIR)
 
 
 class Listener:
     """
-    Listens for the wake word, then records until you stop talking, then
+    Listens for "Rise Hestia", then records until you stop talking, then
     turns that into text. Fed 80 ms frames of 16 kHz audio — by the
     microphone normally, by tests directly. Muting closes the microphone
     stream itself; nothing is ever written to disk or sent anywhere.
 
+    Waiting: a speech detector runs on every frame; when a stretch of
+    speech ends, its first two seconds are transcribed and checked for the
+    phrase. Said in one breath ("Rise Hestia, what time is it?"), the rest
+    is the request; said on its own, she listens for what comes next.
+
     Callbacks run on the listener's threads, not the GUI's:
-        on_wake()        the wake word was heard; recording has started
-        on_text(text)    what was said after it
-        on_nothing()     the wake word, then nothing usable
+        on_wake()        the wake phrase was heard
+        on_text(text)    what was asked
+        on_nothing()     the wake phrase, then nothing usable
     """
 
-    def __init__(self, on_wake, on_text, on_nothing,
-                 wake_model=None, vad=None, transcribe=None, background=None):
+    def __init__(self, on_wake, on_text, on_nothing, vad=None, transcribe=None, background=None):
         self.on_wake, self.on_text, self.on_nothing = on_wake, on_text, on_nothing
-        self._wake = wake_model
         self._vad = vad
         self._transcribe = transcribe or self._whisper
         self._background = background or (lambda work: threading.Thread(target=work, daemon=True).start())
         self._whisper_model = None
+        self._whisper_lock = threading.Lock()  # the wake check and a request can overlap
         self._stream_factory = None  # sounddevice.InputStream unless a test sets one
         self._stream = None
         self._frames = queue.Queue()
@@ -276,34 +295,29 @@ class Listener:
         self._reset()
 
     def _models(self):
-        if self._wake is None:
-            from openwakeword.model import Model
-            self._wake = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx",
-                               melspec_model_path=os.path.join(WAKE_DIR, "melspectrogram.onnx"),
-                               embedding_model_path=os.path.join(WAKE_DIR, "embedding_model.onnx"))
         if self._vad is None:
             from openwakeword.vad import VAD
-            self._vad = VAD(model_path=os.path.join(WAKE_DIR, "silero_vad.onnx"))
+            self._vad = VAD(model_path=VAD_MODEL)
 
     def _reset(self):
         self.recording = False
         self._audio = []
         self._heard_speech = False
         self._quiet_frames = 0
+        self._stretch = []        # waiting: the stretch of speech being collected
+        self._stretch_quiet = 0
+        self._recent = []         # waiting: the last few frames, for the pre-roll
 
     # --- one frame at a time -----------------------------------------------
     def process(self, frame):
         self._models()
+        speech = self._vad.predict(frame, frame_size=640) >= SPEECH_THRESHOLD
         if not self.recording:
-            scores = self._wake.predict(frame)
-            if max(scores.values(), default=0) >= WAKE_THRESHOLD:
-                self._wake.reset()
-                self.recording = True
-                self.on_wake()
+            self._wait(frame, speech)
             return
 
         self._audio.append(frame)
-        if self._vad.predict(frame, frame_size=640) >= SPEECH_THRESHOLD:
+        if speech:
             self._heard_speech, self._quiet_frames = True, 0
         else:
             self._quiet_frames += 1
@@ -318,20 +332,60 @@ class Listener:
             self._reset()
             self._background(lambda: self._finish(audio))
 
+    def _wait(self, frame, speech):
+        if speech:
+            if not self._stretch:
+                self._stretch = list(self._recent)
+            self._stretch.append(frame)
+            self._stretch_quiet = 0
+        elif self._stretch:
+            self._stretch.append(frame)
+            self._stretch_quiet += 1
+        else:
+            self._recent = (self._recent + [frame])[-PRE_ROLL_FRAMES:]
+            return
+        long_enough = len(self._stretch) / _FRAMES_PER_SECOND >= MAX_RECORD_SECONDS
+        if self._stretch_quiet / _FRAMES_PER_SECOND >= WAKE_PAUSE_SECONDS or long_enough:
+            audio = np.concatenate(self._stretch).astype(np.float32) / 32768.0
+            self._stretch, self._stretch_quiet, self._recent = [], 0, []
+            self._check_for_wake(audio)
+
+    def _check_for_wake(self, audio):
+        head = audio[:int(WAKE_CHECK_SECONDS * RATE)]
+        request = split_wake(self._transcribe(head, prompt=WAKE_PROMPT))
+        if request is None:
+            return  # ordinary speech: nothing heard, nothing kept
+        if len(audio) > len(head):
+            # Longer than the check: transcribe it all to get the whole request.
+            request = split_wake(self._transcribe(audio, prompt=WAKE_PROMPT)) or request
+        self.on_wake()
+        if len(request) >= 2:
+            self.on_text(request)
+        else:
+            self.recording = True  # "Rise Hestia." on its own: listen for what comes next
+
     def _finish(self, audio):
-        text = _WAKE_ECHO.sub("", (self._transcribe(audio) or "").strip()).strip()
+        text = (self._transcribe(audio) or "").strip()
+        text = split_wake(text) if split_wake(text) is not None else text  # she said it again
         if len(text) < 2:
             self.on_nothing()
         else:
             self.on_text(text)
 
-    def _whisper(self, audio):
-        if self._whisper_model is None:
-            from faster_whisper import WhisperModel
-            self._whisper_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8",
-                                               download_root=WHISPER_DIR)
-        segments, _ = self._whisper_model.transcribe(audio, language="en", beam_size=1, vad_filter=True)
-        return " ".join(segment.text.strip() for segment in segments)
+    def _whisper(self, audio, prompt=None):
+        with self._whisper_lock:
+            if self._whisper_model is None:
+                from faster_whisper import WhisperModel
+                self._whisper_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8",
+                                                   download_root=WHISPER_DIR)
+            # Cut off speech can send Whisper round in circles ("the heart of the heart
+            # of..."), which took up to 6.6 s: cap the words at twice a fast talker's
+            # rate, and skip the slow retries for the wake check.
+            limit = int(len(audio) / RATE * 8) + 8
+            segments, _ = self._whisper_model.transcribe(
+                audio, language="en", beam_size=1, vad_filter=True, initial_prompt=prompt,
+                max_new_tokens=limit, temperature=0.0 if prompt else (0.0, 0.2, 0.4, 0.6, 0.8, 1.0))
+            return " ".join(segment.text.strip() for segment in segments)
 
     # --- the microphone ------------------------------------------------------
     def start(self):

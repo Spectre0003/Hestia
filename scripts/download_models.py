@@ -4,7 +4,7 @@ Run once per machine:  venv\\Scripts\\python scripts\\download_models.py
 
   models/kokoro/    Kokoro text-to-speech, int8 (~88 MB) + voices (~26 MB)
   models/whisper/   faster-whisper base.en speech-to-text (~140 MB)
-  models/wakeword/  openWakeWord feature models + "hey jarvis" (~9 MB)
+  models/wakeword/  Silero speech detector, from openWakeWord (~2 MB)
 
 Everything runs on the CPU, so the GPU stays free for the chat model.
 Files that already exist are skipped.
@@ -28,10 +28,15 @@ def main():
             print(f"Downloading {name}...")
             urllib.request.urlretrieve(KOKORO_URL + name, target)
 
+    # "Rise Hestia" is heard by Whisper; only openWakeWord's speech detector is needed.
+    import openwakeword
     import openwakeword.utils
-    print("Downloading wake-word models...")
-    openwakeword.utils.download_models(model_names=["hey_jarvis"],
-                                       target_directory=os.path.join(MODELS, "wakeword"))
+    wakeword = os.path.join(MODELS, "wakeword")
+    os.makedirs(wakeword, exist_ok=True)
+    for model in openwakeword.VAD_MODELS.values():
+        if not os.path.exists(os.path.join(wakeword, model["download_url"].split("/")[-1])):
+            print("Downloading the speech detector...")
+            openwakeword.utils.download_file(model["download_url"], wakeword)
 
     from faster_whisper import WhisperModel
     print("Downloading Whisper base.en...")

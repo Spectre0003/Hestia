@@ -105,18 +105,6 @@ import numpy as np  # noqa: E402
 SILENT = np.zeros(voice.FRAME, dtype=np.int16)
 
 
-class FakeWake:
-    def __init__(self, fire_on):
-        self.frames, self.fire_on = 0, set(fire_on)
-
-    def predict(self, frame):
-        self.frames += 1
-        return {"hey_jarvis": 1.0 if self.frames in self.fire_on else 0.0}
-
-    def reset(self):
-        pass
-
-
 class FakeVAD:
     """Says 'speech' for frames whose first sample is non-zero."""
 
@@ -125,52 +113,95 @@ class FakeVAD:
 
 
 SPEECH = np.full(voice.FRAME, 1000, dtype=np.int16)
+PAUSE = [SILENT] * 8          # 0.64 s: longer than the wake pause, shorter than giving up
+
+
+class SplitWakeTest(unittest.TestCase):
+    def test_the_phrase_and_what_follows(self):
+        self.assertEqual(voice.split_wake("Rise, Hestia. What time is it?"), "What time is it?")
+        self.assertEqual(voice.split_wake(" rise hester, open notepad"), "open notepad")
+        self.assertEqual(voice.split_wake("Rise Hestia."), "")
+        self.assertEqual(voice.split_wake("Arise, Hestia!"), "")
+
+    def test_other_speech_is_not_the_phrase(self):
+        for text in ("I like Hestia", "The sun will rise", "Rise Hestiaville", "Hestia, rise", "", None):
+            self.assertIsNone(voice.split_wake(text), text)
 
 
 class ListenerTest(unittest.TestCase):
-    def make(self, transcript="what time is it", fire_on=(4,)):
-        self.events = []
-        self.heard_audio = []
+    def make(self, *transcripts):
+        """Each transcribe call returns the next transcript (the last one repeats)."""
+        self.events, self.calls = [], []
+        replies = list(transcripts) or ["what time is it"]
 
-        def transcribe(audio):
-            self.heard_audio.append(audio)
-            return transcript
+        def transcribe(audio, prompt=None):
+            self.calls.append((len(audio), prompt))
+            return replies.pop(0) if len(replies) > 1 else replies[0]
 
-        listener = voice.Listener(
+        return voice.Listener(
             on_wake=lambda: self.events.append("wake"),
             on_text=lambda text: self.events.append(("text", text)),
             on_nothing=lambda: self.events.append("nothing"),
-            wake_model=FakeWake(fire_on), vad=FakeVAD(), transcribe=transcribe,
-            background=lambda work: work())
-        return listener
+            vad=FakeVAD(), transcribe=transcribe, background=lambda work: work())
 
     def feed(self, listener, *frames):
         for frame in frames:
             listener.process(frame)
 
-    def test_wake_then_speech_then_silence_gives_text(self):
-        listener = self.make()
-        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 10, *[SILENT] * 12)
+    def test_silence_costs_nothing(self):
+        listener = self.make("Rise, Hestia.")
+        self.feed(listener, *[SILENT] * 200)
+        self.assertEqual((self.events, self.calls), ([], []))
+
+    def test_phrase_then_pause_then_question(self):
+        listener = self.make("Rise, Hestia.", "what time is it")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 10, *[SILENT] * 12)
         self.assertEqual(self.events, ["wake", ("text", "what time is it")])
-        self.assertEqual(len(self.heard_audio), 1)
+        self.assertEqual(self.calls[0][1], voice.WAKE_PROMPT)  # the check was hinted
+        self.assertIsNone(self.calls[1][1])                    # the request was not
+
+    def test_phrase_and_question_in_one_breath(self):
+        listener = self.make("Rise, Hestia. What time is it?")
+        self.feed(listener, *[SPEECH] * 20, *PAUSE)
+        self.assertEqual(self.events, ["wake", ("text", "What time is it?")])
+        self.assertFalse(listener.recording)
+
+    def test_a_long_stretch_is_transcribed_whole_to_get_the_request(self):
+        listener = self.make("Rise, Hestia. What", "Rise, Hestia. What time is it right now?")
+        self.feed(listener, *[SPEECH] * 40, *PAUSE)  # 3.2 s: longer than the check
+        self.assertEqual(self.events, ["wake", ("text", "What time is it right now?")])
+        self.assertEqual(self.calls[0][0], int(voice.WAKE_CHECK_SECONDS * voice.RATE))
+
+    def test_other_speech_is_ignored(self):
+        listener = self.make("I was reading about Hestia yesterday.")
+        self.feed(listener, *[SPEECH] * 20, *PAUSE, *[SPEECH] * 20, *PAUSE)
+        self.assertEqual(self.events, [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertFalse(listener.recording)
+
+    def test_the_start_of_speech_is_kept(self):
+        listener = self.make("nothing")
+        self.feed(listener, *[SILENT] * 10, *[SPEECH] * 5, *PAUSE)
+        expected = (voice.PRE_ROLL_FRAMES + 5 + 5) * voice.FRAME  # pre-roll, speech, 0.4 s pause
+        self.assertEqual(self.calls[0][0], expected)
 
     def test_wake_but_nothing_said_gives_up(self):
-        listener = self.make()
-        self.feed(listener, *[SILENT] * 4, *[SILENT] * int(voice.WAIT_FOR_SPEECH_SECONDS * 12.5 + 5))
+        listener = self.make("Rise, Hestia.")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SILENT] * int(voice.WAIT_FOR_SPEECH_SECONDS * 12.5 + 5))
         self.assertEqual(self.events, ["wake", "nothing"])
-        self.assertEqual(self.heard_audio, [])
+        self.assertEqual(len(self.calls), 1)
 
     def test_long_speech_is_cut_off(self):
-        listener = self.make()
-        self.feed(listener, *[SILENT] * 4, *[SPEECH] * int(voice.MAX_RECORD_SECONDS * 12.5 + 5))
+        listener = self.make("Rise, Hestia.", "what time is it")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * int(voice.MAX_RECORD_SECONDS * 12.5 + 5))
         self.assertEqual(self.events, ["wake", ("text", "what time is it")])
 
-    def test_wake_phrase_is_stripped_and_empty_text_is_nothing(self):
-        listener = self.make(transcript="Hey Jarvis, what time is it?")
-        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 5, *[SILENT] * 12)
+    def test_wake_phrase_repeated_is_stripped_and_empty_text_is_nothing(self):
+        listener = self.make("Rise, Hestia.", "Rise Hestia, what time is it?")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 5, *[SILENT] * 12)
         self.assertEqual(self.events[-1], ("text", "what time is it?"))
-        listener = self.make(transcript="  ")
-        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 5, *[SILENT] * 12)
+        listener = self.make("Rise, Hestia.", "  ")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 5, *[SILENT] * 12)
         self.assertEqual(self.events[-1], "nothing")
 
     def test_a_frame_that_fails_doesnt_stop_listening(self):
@@ -222,13 +253,16 @@ class ListenerTest(unittest.TestCase):
 @unittest.skipUnless(voice.listening_models_present() and voice.voice_models_present(),
                      "voice models not downloaded")
 class RealListeningTest(unittest.TestCase):
-    def test_spoken_wake_word_and_question_become_text(self):
+    def listen_to(self, *sentences):
         from scipy.signal import resample_poly
         from kokoro_onnx import Kokoro
-        audio, rate = Kokoro(voice.KOKORO_MODEL, voice.KOKORO_VOICES).create(
-            "Hey Jarvis, what time is it right now?", voice=voice.VOICE)
-        pcm = (resample_poly(audio, 2, 3) * 32767).astype(np.int16)  # 24 kHz -> 16 kHz, like the mic
-        pcm = np.concatenate([np.zeros(16000, np.int16), pcm, np.zeros(32000, np.int16)])
+        kokoro = Kokoro(voice.KOKORO_MODEL, voice.KOKORO_VOICES)
+        pcm = [np.zeros(16000, np.int16)]
+        for sentence in sentences:
+            audio, _ = kokoro.create(sentence, voice=voice.VOICE)
+            pcm += [(resample_poly(audio, 2, 3) * 32767).astype(np.int16),  # 24 kHz -> 16 kHz, like the mic
+                    np.zeros(16000, np.int16)]
+        pcm = np.concatenate(pcm + [np.zeros(16000, np.int16)])
         events = []
         listener = voice.Listener(on_wake=lambda: events.append("wake"),
                                   on_text=lambda t: events.append(t),
@@ -236,8 +270,20 @@ class RealListeningTest(unittest.TestCase):
                                   background=lambda work: work())
         for i in range(0, len(pcm) - voice.FRAME + 1, voice.FRAME):
             listener.process(pcm[i:i + voice.FRAME])
+        return events
+
+    def test_wake_phrase_and_question_in_one_breath(self):
+        events = self.listen_to("Rise Hestia, what time is it right now?")
         self.assertEqual(events[0], "wake")
         self.assertIn("time", events[-1].lower())
+
+    def test_wake_phrase_then_question(self):
+        events = self.listen_to("Rise Hestia.", "What time is it right now?")
+        self.assertEqual(events[0], "wake")
+        self.assertIn("time", events[-1].lower())
+
+    def test_other_speech_does_not_wake_her(self):
+        self.assertEqual(self.listen_to("I was reading about the goddess Hestia yesterday."), [])
 
 
 if __name__ == "__main__":
