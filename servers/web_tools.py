@@ -21,10 +21,12 @@ import html.parser
 import ipaddress
 import json
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import truststore
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -134,7 +136,12 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_WEB = urllib.request.build_opener(_NoRedirects)
+# Certificates are checked by Windows' own verifier, not Python's: Python only
+# trusts roots already in the Windows store, while Windows fetches newer roots
+# the first time it meets them. example.com failed here until something else
+# had made Windows fetch its root (SSL.com TLS ECC Root CA 2022).
+_TLS = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+_WEB = urllib.request.build_opener(_NoRedirects, urllib.request.HTTPSHandler(context=_TLS))
 
 
 class _PageText(html.parser.HTMLParser):

@@ -11,3 +11,6 @@ pywin32>=306; sys_platform == "win32"
 # Pinned exactly: the MCP SDK's 1.x -> 2.x jump renamed core APIs
 # (FastMCP -> MCPServer, camelCase -> snake_case fields).
 mcp==2.2.0
+# HTTPS checked by Windows' own verifier (Stage 8 fetch_page); mcp pulls it
+# in too, but web_tools uses it directly.
+truststore>=0.9

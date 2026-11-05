@@ -177,6 +177,19 @@ class RealFetchTest(unittest.TestCase):
     def test_a_real_public_page(self):
         self.assertIn("Example Domain", web_tools.fetch_page("https://example.com/"))
 
+    def test_wikipedia_which_refuses_pythons_default_user_agent(self):
+        self.assertIn("Wikipedia", web_tools.fetch_page("https://en.wikipedia.org/wiki/Hestia"))
+
+
+class CertificateVerificationTest(unittest.TestCase):
+    def test_https_is_verified_by_windows_itself(self):
+        # Python's own SSL only trusts roots already in the Windows store;
+        # Windows adds newer ones the first time its own verifier meets them.
+        # example.com failed here (SSL.com TLS ECC Root CA 2022) until curl,
+        # which uses Windows' verifier, had made Windows fetch that root.
+        import truststore
+        self.assertIsInstance(web_tools._TLS, truststore.SSLContext)
+
 
 def _searxng_up():
     try:
