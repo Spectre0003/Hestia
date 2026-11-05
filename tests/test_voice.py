@@ -94,6 +94,17 @@ class SpeakerTest(unittest.TestCase):
         self.assertTrue(stopped.is_set())
         self.assertLess(len(played), 4)
 
+    def test_speaking_is_true_until_the_last_sentence_has_played(self):
+        speaker, _, played, _ = self.make(play_seconds=0.2)
+        self.assertFalse(speaker.speaking)
+        speaker.say("One. Two.")
+        self.assertTrue(speaker.speaking)
+        self.assertTrue(self.wait_for(lambda: not speaker.speaking))
+        self.assertEqual(len(played), 2)
+        speaker.say("One. Two. Three.")
+        speaker.stop()
+        self.assertTrue(self.wait_for(lambda: not speaker.speaking), "stop() left her 'speaking'")
+
     def test_say_speaks_a_whole_message(self):
         speaker, _, played, _ = self.make()
         speaker.say("I need you to approve that on screen.")
@@ -129,9 +140,10 @@ class SplitWakeTest(unittest.TestCase):
 
 
 class ListenerTest(unittest.TestCase):
-    def make(self, *transcripts):
+    def make(self, *transcripts, awake=False):
         """Each transcribe call returns the next transcript (the last one repeats)."""
         self.events, self.calls = [], []
+        self.is_awake = awake
         replies = list(transcripts) or ["what time is it"]
 
         def transcribe(audio, prompt=None):
@@ -141,8 +153,8 @@ class ListenerTest(unittest.TestCase):
         return voice.Listener(
             on_wake=lambda: self.events.append("wake"),
             on_text=lambda text: self.events.append(("text", text)),
-            on_nothing=lambda: self.events.append("nothing"),
-            vad=FakeVAD(), transcribe=transcribe, background=lambda work: work())
+            on_command=lambda name: self.events.append(("command", name)),
+            awake=lambda: self.is_awake, vad=FakeVAD(), transcribe=transcribe)
 
     def feed(self, listener, *frames):
         for frame in frames:
@@ -153,18 +165,16 @@ class ListenerTest(unittest.TestCase):
         self.feed(listener, *[SILENT] * 200)
         self.assertEqual((self.events, self.calls), ([], []))
 
-    def test_phrase_then_pause_then_question(self):
-        listener = self.make("Rise, Hestia.", "what time is it")
-        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 10, *[SILENT] * 12)
-        self.assertEqual(self.events, ["wake", ("text", "what time is it")])
+    def test_rise_hestia_alone_just_wakes_her(self):
+        listener = self.make("Rise, Hestia.")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE)
+        self.assertEqual(self.events, ["wake"])
         self.assertEqual(self.calls[0][1], voice.WAKE_PROMPT)  # the check was hinted
-        self.assertIsNone(self.calls[1][1])                    # the request was not
 
     def test_phrase_and_question_in_one_breath(self):
         listener = self.make("Rise, Hestia. What time is it?")
         self.feed(listener, *[SPEECH] * 20, *PAUSE)
         self.assertEqual(self.events, ["wake", ("text", "What time is it?")])
-        self.assertFalse(listener.recording)
 
     def test_a_long_stretch_is_transcribed_whole_to_get_the_request(self):
         listener = self.make("Rise, Hestia. What", "Rise, Hestia. What time is it right now?")
@@ -172,12 +182,46 @@ class ListenerTest(unittest.TestCase):
         self.assertEqual(self.events, ["wake", ("text", "What time is it right now?")])
         self.assertEqual(self.calls[0][0], int(voice.WAKE_CHECK_SECONDS * voice.RATE))
 
-    def test_other_speech_is_ignored(self):
+    def test_other_speech_is_ignored_outside_a_conversation(self):
         listener = self.make("I was reading about Hestia yesterday.")
         self.feed(listener, *[SPEECH] * 20, *PAUSE, *[SPEECH] * 20, *PAUSE)
         self.assertEqual(self.events, [])
-        self.assertEqual(len(self.calls), 2)
-        self.assertFalse(listener.recording)
+
+    def test_in_a_conversation_everything_said_is_a_turn(self):
+        listener = self.make("what time is it", "and the date?", awake=True)
+        self.feed(listener, *[SPEECH] * 10, *[SILENT] * 12, *[SPEECH] * 10, *[SILENT] * 12)
+        self.assertEqual(self.events, [("text", "what time is it"), ("text", "and the date?")])
+        self.assertEqual(len(self.calls), 2)  # one pass each, no separate check
+
+    def test_in_a_conversation_a_thinking_pause_doesnt_end_the_turn(self):
+        listener = self.make("what time is it in Tokyo", awake=True)
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 10, *[SILENT] * 12)
+        self.assertEqual(self.events, [("text", "what time is it in Tokyo")])
+
+    def test_speech_that_began_while_she_was_talking_is_not_a_turn(self):
+        listener = self.make("It's four o'clock.", "Fall, Hestia.")
+        self.feed(listener, *[SPEECH] * 10)          # her voice, back through the mic
+        self.is_awake = True                         # she has just stopped talking
+        self.feed(listener, *PAUSE)
+        self.assertEqual(self.events, [])
+        self.is_awake = False                        # talking again: the phrases still work
+        self.feed(listener, *[SPEECH] * 10, *PAUSE)
+        self.assertEqual(self.events, [("command", "hush")])
+
+    def test_fall_and_mute_hestia_are_commands(self):
+        listener = self.make("Fall, Hestia.", "Mute Hestia.")
+        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 10, *PAUSE)
+        self.assertEqual(self.events, [("command", "hush"), ("command", "mute")])
+
+    def test_fall_hestia_in_a_conversation_is_a_command_not_a_turn(self):
+        listener = self.make("Fall, Hestia.", awake=True)
+        self.feed(listener, *[SPEECH] * 10, *[SILENT] * 12)
+        self.assertEqual(self.events, [("command", "hush")])
+
+    def test_rise_hestia_again_in_a_conversation_is_stripped(self):
+        listener = self.make("Rise Hestia, what time is it?", awake=True)
+        self.feed(listener, *[SPEECH] * 10, *[SILENT] * 12)
+        self.assertEqual(self.events, ["wake", ("text", "what time is it?")])
 
     def test_the_start_of_speech_is_kept(self):
         listener = self.make("nothing")
@@ -185,24 +229,10 @@ class ListenerTest(unittest.TestCase):
         expected = (voice.PRE_ROLL_FRAMES + 5 + 5) * voice.FRAME  # pre-roll, speech, 0.4 s pause
         self.assertEqual(self.calls[0][0], expected)
 
-    def test_wake_but_nothing_said_gives_up(self):
-        listener = self.make("Rise, Hestia.")
-        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SILENT] * int(voice.WAIT_FOR_SPEECH_SECONDS * 12.5 + 5))
-        self.assertEqual(self.events, ["wake", "nothing"])
-        self.assertEqual(len(self.calls), 1)
-
     def test_long_speech_is_cut_off(self):
-        listener = self.make("Rise, Hestia.", "what time is it")
-        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * int(voice.MAX_RECORD_SECONDS * 12.5 + 5))
-        self.assertEqual(self.events, ["wake", ("text", "what time is it")])
-
-    def test_wake_phrase_repeated_is_stripped_and_empty_text_is_nothing(self):
-        listener = self.make("Rise, Hestia.", "Rise Hestia, what time is it?")
-        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 5, *[SILENT] * 12)
-        self.assertEqual(self.events[-1], ("text", "what time is it?"))
-        listener = self.make("Rise, Hestia.", "  ")
-        self.feed(listener, *[SPEECH] * 10, *PAUSE, *[SPEECH] * 5, *[SILENT] * 12)
-        self.assertEqual(self.events[-1], "nothing")
+        listener = self.make("blah " * 20, awake=True)
+        self.feed(listener, *[SPEECH] * int(voice.MAX_RECORD_SECONDS * 12.5 + 5))
+        self.assertEqual(len(self.events), 1)
 
     def test_a_frame_that_fails_doesnt_stop_listening(self):
         listener = self.make()
@@ -266,8 +296,7 @@ class RealListeningTest(unittest.TestCase):
         events = []
         listener = voice.Listener(on_wake=lambda: events.append("wake"),
                                   on_text=lambda t: events.append(t),
-                                  on_nothing=lambda: events.append("nothing"),
-                                  background=lambda work: work())
+                                  awake=lambda: "wake" in events)  # a conversation once she's woken
         for i in range(0, len(pcm) - voice.FRAME + 1, voice.FRAME):
             listener.process(pcm[i:i + voice.FRAME])
         return events

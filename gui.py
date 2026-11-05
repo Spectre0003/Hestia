@@ -17,17 +17,21 @@ dialog is open, the answer is Deny, never a hang and never an approval.
 
 import getpass
 import json
+import math
 import os
+import random
+import re
 import sys
 import threading
 import unicodedata
 
-from PySide6.QtCore import QObject, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPixmap, QTextDocument
+from PySide6.QtCore import QEasingCurve, QObject, QPointF, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap,
+                           QRadialGradient, QTextDocument)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QMenu, QPlainTextEdit, QPushButton, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget,
+    QMenu, QPlainTextEdit, QToolBar, QPushButton, QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 import engine
@@ -41,23 +45,82 @@ INSTANCE_NAME = f"hestia-{getpass.getuser()}"
 
 # "Start with Windows" is a shortcut in the user's own Startup folder —
 # per-user, no admin, and visible/removable in File Explorer.
+LOGO_PATH = os.path.join(_HERE, "assets", "hestia.png")
+ICON_PATH = os.path.join(_HERE, "data", "hestia.ico")  # for shortcuts, made from the logo
 STARTUP_SHORTCUT = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
                                 "Start Menu", "Programs", "Startup", "Hestia.lnk")
 
-# Said on their own after the wake word, these just stop her talking.
+# A spoken reply longer than this is read out up to the end of the sentence
+# that crosses it; then she asks before going on. The window shows it all.
+SPOKEN_WORD_LIMIT = 80
+MORE_QUESTION = "There's more to it — want me to read the rest, or sum it up?"
+SUMMARY_REQUEST = "Sum up the rest of your last answer in two or three sentences — I'm listening, not reading."
+_WANTS_SUMMARY = re.compile(r"\b(sum|summar\w*|short|shorter|brief|gist|tl;?dr)\b", re.IGNORECASE)
+_WANTS_NOTHING = re.compile(r"\b(no|nope|nah|skip( it)?|that's (fine|enough|ok(ay)?))\b", re.IGNORECASE)
+_WANTS_REST = re.compile(r"\b(read|rest|all|full|whole|continue|go on|carry on|yes|yeah|yep|sure|ok(ay)?)\b",
+                         re.IGNORECASE)
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+
+# Said on her way out of a conversation ("Fall Hestia").
+FAREWELLS = ("Okay.", "Alright, I'll be here.", "Sure. Talk later.", "Okay — I'm around if you need me.")
+
+# Said on their own in a conversation, these just stop her talking.
 STOP_WORDS = {"stop", "cancel", "never mind", "nevermind", "be quiet", "quiet", "shush", "that's enough"}
 
 IDLE_CHECK_MS = 60_000
 RENDER_EVERY_MS = 50  # streaming re-renders are batched, not one per token
 
-# Applied to what the transcript's Markdown renders to. Colours read on both
-# Windows light and dark mode.
-TRANSCRIPT_STYLE = """
-p { margin-top: 2px; margin-bottom: 12px; line-height: 135%; }
-strong { color: #4f8fd6; }
-em { color: #8a8f98; }
-code { font-family: Consolas, monospace; color: #8a8f98; }
-pre { font-family: Consolas, monospace; background-color: rgba(128, 128, 128, 30); padding: 8px; }
+FONT = "Yu Gothic UI"          # clean, and from the same Japanese design family as the logo
+CODE_FONT = "Cascadia Mono"
+BUBBLE_SHARE = 0.78            # a message bubble is at most this much of the transcript's width
+
+# Her state, shown by the orb in the window and the tray icon's colour.
+STATE_COLOURS = {"starting": "#6c7380", "ready": "#e07a3f", "listening": "#3ecf8e",
+                 "thinking": "#f0b44c", "speaking": "#5aa7ff", "muted": "#6c7380"}
+STATE_LABELS = {"starting": "Starting…", "ready": "Say “Rise Hestia”", "listening": "Listening…",
+                "speaking": "Speaking…",
+                "thinking": "Thinking…", "muted": "Microphone muted"}
+
+APP_STYLE = """
+QMainWindow, QWidget#central, QDialog, QMessageBox { background: #14161b; color: #e6e8ec; }
+QLabel { color: #e6e8ec; }
+QLabel#title { font-size: 18pt; font-weight: 600; letter-spacing: 1px; }
+QLabel#state { color: #8a919e; font-size: 10pt; }
+QScrollArea#transcript { background: #181b22; border: 1px solid #222731; border-radius: 18px; }
+QWidget#transcriptInner { background: #181b22; }
+QLabel#you { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c8642c, stop:1 #e0843f);
+             color: #fff7f0; border-radius: 16px; padding: 10px 15px; font-size: 11pt; }
+QLabel#hestia { background: #242934; color: #eceef2; border: 1px solid #2e3441; border-radius: 16px;
+                padding: 10px 15px; font-size: 11pt; }
+QLabel#speaker { color: #7d8594; font-size: 8.5pt; padding: 0 6px; }
+QLabel#notice { color: #8a919e; font-size: 9pt; font-style: italic; padding: 2px 30px; }
+QLabel#output { background: #11141a; color: #c9d1dc; border: 1px solid #262c37; border-radius: 12px;
+                padding: 12px 14px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 9.5pt; }
+QLabel#welcome { color: #8a919e; font-size: 12pt; }
+QPlainTextEdit { background: #1b1f27; border: 1px solid #2c3340; border-radius: 10px; color: #e6e8ec; }
+QLineEdit { background: #1f242d; border: 1px solid #2c3340; border-radius: 14px; padding: 10px 18px;
+            color: #e6e8ec; font-size: 11pt; selection-background-color: #e07a3f; }
+QLineEdit:focus { border: 1px solid #e07a3f; }
+QLineEdit:disabled { color: #6c7380; }
+QPushButton { background: #262c37; color: #e6e8ec; border: none; border-radius: 16px; padding: 8px 18px; }
+QPushButton:hover { background: #303846; }
+QPushButton#send { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e07a3f, stop:1 #f0a35e);
+                   color: white; font-weight: 600; border-radius: 14px; padding: 11px 24px; }
+QPushButton#send:hover { background: #f0a35e; }
+QPushButton#send:disabled { background: #303846; color: #6c7380; }
+QToolBar { background: transparent; border: none; spacing: 6px; }
+QToolButton { background: #1f242d; color: #c9ccd3; border: 1px solid #2c3340; border-radius: 13px; padding: 5px 13px; }
+QToolButton:hover { background: #2a303b; border-color: #e07a3f; }
+QToolButton:checked { background: #e07a3f; color: white; border-color: #e07a3f; }
+QStatusBar { background: #14161b; color: #7d8594; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 6px 2px; }
+QScrollBar::handle:vertical { background: #343b48; border-radius: 4px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #e07a3f; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical { height: 0; background: none; }
+QMenu { background: #1b1f27; color: #e6e8ec; border: 1px solid #2c3340; padding: 4px; }
+QMenu::item { padding: 6px 22px; border-radius: 6px; }
+QMenu::item:selected { background: #e07a3f; color: white; }
 """
 
 
@@ -168,7 +231,53 @@ class Ears(QObject):
     """Carries the listener's callbacks (its own threads) to the window (the main thread)."""
     wake = Signal()
     text = Signal(str)
-    nothing = Signal()
+    command = Signal(str)
+
+
+class Orb(QWidget):
+    """A glowing circle in her state's colour: it breathes while listening, spins while thinking."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(46, 46)
+        self.state, self.phase = "starting", 0.0
+        self._timer = QTimer(self, interval=33)
+        self._timer.timeout.connect(self._tick)
+
+    def set_state(self, state):
+        self.state = state
+        # Only animates when there's something to show: idle costs no CPU.
+        self._timer.start() if state in ("listening", "thinking", "speaking") else self._timer.stop()
+        self.update()
+
+    def _tick(self):
+        self.phase = (self.phase + 0.05) % (2 * math.pi)
+        self.update()
+
+    def paintEvent(self, event):
+        colour = QColor(STATE_COLOURS[self.state])
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        centre, glow = self.rect().center(), 21
+        if self.state == "listening":
+            glow = 17 + 4 * (1 + math.sin(self.phase * 2)) / 2
+        elif self.state == "speaking":
+            glow = 16 + 6 * abs(math.sin(self.phase * 6))  # quicker, like a voice
+        halo = QRadialGradient(centre, glow)
+        halo.setColorAt(0.0, colour)
+        fade = QColor(colour)
+        fade.setAlpha(0)
+        halo.setColorAt(1.0, fade)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(halo)
+        painter.drawEllipse(centre, glow, glow)
+        painter.setBrush(colour)
+        painter.drawEllipse(centre, 10, 10)
+        if self.state == "thinking":
+            painter.setPen(QPen(colour, 3, Qt.SolidLine, Qt.RoundCap))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawArc(self.rect().adjusted(5, 5, -5, -5), int(-math.degrees(self.phase * 2) * 16), 100 * 16)
+        painter.end()
 
 
 class Worker(QObject):
@@ -215,6 +324,143 @@ class Worker(QObject):
         QThread.currentThread().quit()
 
 
+def _markdown_html(text):
+    """
+    Markdown as HTML, converted by Qt with raw HTML switched off: whatever a
+    reply or a web page put in the text comes out escaped, never as markup.
+    """
+    doc = QTextDocument()
+    doc.setMarkdown(text, QTextDocument.MarkdownFeature(
+        QTextDocument.MarkdownDialectGitHub | QTextDocument.MarkdownNoHTML))
+    html = doc.toHtml()
+    return html[html.index(">", html.index("<body")) + 1:html.rindex("</body>")]
+
+
+_TOOL_MARK = re.compile(r"`\[tool: (\w+)\]` ?")
+
+
+def _tool_note(text):
+    """The engine's `[tool: name]` marks, as one quiet line at the top of her bubble."""
+    used = _TOOL_MARK.findall(text)
+    if not used:
+        return text
+    names = " · ".join(dict.fromkeys(name.replace("_", " ") for name in used))
+    return f"*⚙ {names}*\n\n" + _TOOL_MARK.sub("", text).lstrip()
+
+
+class Transcript(QScrollArea):
+    """The conversation as chat bubbles: yours on the right, hers on the left."""
+    link_clicked = Signal(QUrl)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("transcript")
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        inner.setObjectName("transcriptInner")
+        self._rows = QVBoxLayout(inner)
+        self._rows.setContentsMargins(18, 18, 18, 18)
+        self._rows.setSpacing(8)
+        self._welcome = QLabel()
+        self._welcome.setObjectName("welcome")
+        self._welcome.setAlignment(Qt.AlignCenter)
+        self._welcome.setTextFormat(Qt.RichText)
+        self._welcome.setText(f'<img src="{LOGO_PATH}" width="96" height="96"><br><br>'
+                              "Say <b>“Rise Hestia”</b> to talk, or type below.")
+        self._rows.addStretch(1)
+        self._rows.addWidget(self._welcome)
+        self._rows.addStretch(1)
+        self.setWidget(inner)
+        self._shown = []    # (kind, text) on screen, in order
+        self._bubbles = []  # the label showing each
+        # New messages land at the bottom: follow them.
+        self.verticalScrollBar().rangeChanged.connect(lambda low, high: self.verticalScrollBar().setValue(high))
+
+    def show_messages(self, entries, name):
+        if len(entries) < len(self._shown) or entries[:len(self._shown)][:-1] != self._shown[:-1]:
+            self._clear()
+        for index, (kind, text) in enumerate(entries):
+            if index < len(self._shown):
+                if self._shown[index] != (kind, text):
+                    self._fill(self._bubbles[index], kind, text)
+                    self._shown[index] = (kind, text)
+            else:
+                self._add(kind, text, name)
+        self._welcome.setVisible(not entries)
+        self._rows.setStretch(0, 0 if entries else 1)  # messages from the top; the welcome centred
+
+    def _clear(self):
+        while self._rows.count() > 3:  # stretch, welcome, stretch stay
+            item = self._rows.takeAt(2)
+            if item.layout():
+                while item.layout().count():
+                    widget = item.layout().takeAt(0).widget()
+                    if widget:
+                        widget.deleteLater()
+            elif item.widget():
+                item.widget().deleteLater()
+        self._shown, self._bubbles = [], []
+
+    def _add(self, kind, text, name):
+        bubble = QLabel()
+        bubble.setObjectName(kind)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        bubble.setOpenExternalLinks(False)
+        bubble.linkActivated.connect(lambda link: self.link_clicked.emit(QUrl(link)))
+        row = QVBoxLayout()
+        row.setSpacing(3)
+        line = QHBoxLayout()
+        if kind == "you":
+            line.addStretch(1)
+            line.addWidget(bubble)
+        elif kind == "hestia":
+            caption = QLabel(name)
+            caption.setObjectName("speaker")
+            row.addWidget(caption)
+            line.addWidget(bubble)
+            line.addStretch(1)
+        else:
+            bubble.setAlignment(Qt.AlignCenter if kind == "notice" else Qt.AlignLeft)
+            line.addWidget(bubble)
+        row.addLayout(line)
+        self._rows.insertLayout(self._rows.count() - 1, row)
+        self._shown.append((kind, text))
+        self._bubbles.append(bubble)
+        self._fill(bubble, kind, text)
+
+    def _fill(self, bubble, kind, text):
+        if kind in ("you", "hestia"):
+            if kind == "hestia":
+                text = _tool_note(text)
+            bubble.setTextFormat(Qt.RichText)
+            bubble.setText(_markdown_html(text))
+            self._fit(bubble)
+        else:  # notices and command output are shown exactly as they are
+            bubble.setTextFormat(Qt.PlainText)
+            bubble.setText(text)
+
+    def _fit(self, bubble):
+        """As wide as its text needs, up to BUBBLE_SHARE of the transcript."""
+        widest = int(self.viewport().width() * BUBBLE_SHARE)
+        bubble.ensurePolished()  # so its font is the stylesheet's, not the default
+        doc = QTextDocument()
+        doc.setDefaultFont(bubble.font())
+        doc.setHtml(bubble.text())
+        doc.setTextWidth(widest - 32)
+        bubble.setFixedWidth(min(widest, int(doc.idealWidth()) + 40))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        for (kind, _), bubble in zip(self._shown, self._bubbles):
+            if kind in ("you", "hestia"):
+                self._fit(bubble)
+
+    def toPlainText(self):
+        return "\n".join(text for _, text in self._shown)
+
+
 class ChatWindow(QMainWindow):
     """The chat window. The engine is started on a worker thread as soon as it's built."""
     _start_engine = Signal()
@@ -222,6 +468,8 @@ class ChatWindow(QMainWindow):
     _check_idle = Signal()
     _stop_engine = Signal()
     hidden_to_tray = Signal()
+    state_changed = Signal(str)    # a colour, for the tray icon
+    mute_requested = Signal()      # "Mute Hestia" was said
 
     def __init__(self, session_factory=engine.Session, speaker=None, settings=None, listener=None, chime=None):
         """
@@ -235,37 +483,59 @@ class ChatWindow(QMainWindow):
         self.chime = chime
         self.settings = settings
         self.speaking_turn = False  # whether the reply now streaming is being spoken
+        self._spoken_text = ""      # what of it has gone to the speaker
+        self._held_back = None      # past the word limit: the part not spoken yet
+        self._rest = None           # held back, waiting for "read the rest" or "sum it up"
         self.name = "Hestia"
         self.ready = False
         self.busy = False
         self.transcript = []  # (kind, text): you / hestia / notice / output
+        self.state = "starting"
+        self.in_conversation = False  # from "Rise Hestia" until "Fall Hestia"
         self.setWindowTitle("Hestia")
-        self.resize(760, 640)
+        self.resize(780, 680)
 
-        self.transcript_view = QTextBrowser()
-        self.transcript_view.setOpenLinks(False)
-        # Styles what the Markdown renders to; the model's text never gets to add markup.
-        self.transcript_view.document().setDefaultStyleSheet(TRANSCRIPT_STYLE)
-        self.transcript_view.document().setDocumentMargin(14)
-        font = self.transcript_view.font()
-        font.setPointSizeF(font.pointSizeF() + 1.5)
-        self.transcript_view.setFont(font)
-        self.transcript_view.anchorClicked.connect(self.open_link)
+        self.transcript_view = Transcript()
+        self.transcript_view.link_clicked.connect(self.open_link)
         self.input = QLineEdit()
         self.input.setPlaceholderText("Message Hestia — or type memories, tools, new, remember …, forget …")
         self.input.returnPressed.connect(self.send)
         self.send_button = QPushButton("Send")
+        self.send_button.setObjectName("send")
+        self.send_button.setCursor(Qt.PointingHandCursor)
         self.send_button.clicked.connect(self.send)
         row = QHBoxLayout()
+        row.setSpacing(10)
         row.addWidget(self.input)
         row.addWidget(self.send_button)
+
+        self.orb = Orb()
+        self.title = QLabel("Hestia")
+        self.title.setObjectName("title")
+        self.state_label = QLabel()
+        self.state_label.setObjectName("state")
+        names = QVBoxLayout()
+        names.setSpacing(0)
+        names.addWidget(self.title)
+        names.addWidget(self.state_label)
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        header.addWidget(self.orb)
+        header.addLayout(names)
+        header.addStretch()
+        self._header = header
+
         central = QWidget()
+        central.setObjectName("central")
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(18, 10, 18, 8)
+        layout.setSpacing(12)
+        layout.addLayout(header)
         layout.addWidget(self.transcript_view)
         layout.addLayout(row)
         self.setCentralWidget(central)
 
-        toolbar = self.addToolBar("Hestia")
+        toolbar = QToolBar("Hestia")  # sits in the header, beside her name
         toolbar.setMovable(False)
         for label, command in (("New session", "new"), ("Memories", "memories"), ("Tool log", "tools")):
             action = QAction(label, self)
@@ -284,6 +554,7 @@ class ChatWindow(QMainWindow):
         self.stop_speaking.setEnabled(speaker is not None)
         toolbar.addAction(self.stop_speaking)
         self.toolbar = toolbar
+        header.addWidget(toolbar)
 
         self._render_timer = QTimer(self, singleShot=True, interval=RENDER_EVERY_MS)
         self._render_timer.timeout.connect(self._render)
@@ -309,51 +580,113 @@ class ChatWindow(QMainWindow):
         self.thread.start()
         self._start_engine.emit()
 
+        # The speaker talks on its own threads; this keeps the orb in step with it.
+        self._state_timer = QTimer(self, interval=200)
+        self._state_timer.timeout.connect(self._refresh_state)
+        self._state_timer.start()
+
         self._idle_timer = QTimer(self, interval=IDLE_CHECK_MS)
         self._idle_timer.timeout.connect(self._check_idle.emit)
         self._idle_timer.start()
 
     # ---- sending -------------------------------------------------------
-    def send(self, text=None, spoken=False):
+    def send(self, text=None, spoken=False, asking=None):
+        """asking: what the engine is sent, when it isn't what's shown (a summary request)."""
         text = (self.input.text() if text is None else text).strip()
         if not text or not self.ready or self.busy:
             return
         self._hush()  # a new message cuts off whatever she was saying
         self.speaking_turn = bool(self.speaker) and (spoken or self.speak_all.isChecked())
+        self._spoken_text, self._held_back, self._rest = "", None, None
         self.input.clear()
         if text.lower() not in ("memories", "tools", "new"):
             self.transcript.append(("you", text))
         self._render()
         self._set_busy(True, "Thinking…")
-        self._submit.emit(text)
+        self._submit.emit(asking or text)
 
     def send_spoken(self, text):
         """A turn that came from the microphone: its reply is spoken."""
         self.send(text, spoken=True)
 
     # ---- what the microphone hears (main thread) -------------------------
+    def awake(self):
+        """For the listener (its own thread): is what's said now a turn? Only in a
+        conversation, and only while she's neither thinking nor talking."""
+        return (self.in_conversation and self.ready and not self.busy
+                and not (self.speaker and self.speaker.speaking))
+
     @Slot()
     def heard_wake(self):
+        """"Rise Hestia": cut her off, and talk until "Fall Hestia"."""
         self._hush()
         if self.chime:
             self.chime()
-        self.statusBar().showMessage("Listening…")
+        self.in_conversation = True
+        self.statusBar().showMessage("Talk away — say “Fall Hestia” to end the conversation.", 6000)
+        self._refresh_state()
+
+    @Slot(str)
+    def heard_command(self, name):
+        """"Fall Hestia": end the conversation. "Mute Hestia": that, and stop listening."""
+        self._hush()
+        was_talking, self.in_conversation = self.in_conversation, False
+        if name == "mute":
+            self.mute_requested.emit()
+        else:
+            if was_talking and self.speaker:
+                self.speaker.say(random.choice(FAREWELLS))
+            self.statusBar().showMessage("Conversation ended — say “Rise Hestia” to start again.", 4000)
+        self._refresh_state()
 
     @Slot(str)
     def heard_text(self, text):
         if text.lower().strip(" .!?,") in STOP_WORDS:
             self._hush()
+            self._rest = None
             self.statusBar().showMessage("Okay.", 3000)
             return
         if self.busy or not self.ready:
             # Never queued: a spoken "yes" must not answer an open approval dialog.
             self.statusBar().showMessage("Still on the last request — ask again in a moment.", 4000)
             return
+        if self._rest and self._answer_more(text):
+            return
         self.send_spoken(text)
 
-    @Slot()
-    def heard_nothing(self):
-        self.statusBar().showMessage("Didn't catch that.", 3000)
+    def _answer_more(self, text):
+        """The answer to MORE_QUESTION, if that's what this is. True if it was handled."""
+        rest, self._rest = self._rest, None
+        if _WANTS_SUMMARY.search(text):
+            self.send(text, spoken=True, asking=SUMMARY_REQUEST)
+        elif _WANTS_NOTHING.search(text):
+            self.speaker.say("Okay.")
+        elif _WANTS_REST.search(text):
+            self._hush()
+            self.speaker.feed(rest)
+            self.speaker.flush()
+        else:
+            return False  # a new question: the rest is dropped
+        return True
+
+    def _idle_state(self):
+        if self.listener and self.listener.muted:
+            return "muted"
+        if self.speaker and self.speaker.speaking:
+            return "speaking"
+        return "listening" if self.in_conversation else "ready"
+
+    def _refresh_state(self):
+        if self.ready and not self.busy:
+            state = self._idle_state()
+            if state != self.state:
+                self.set_state(state)
+
+    def set_state(self, state):
+        self.state = state
+        self.orb.set_state(state)
+        self.state_label.setText(STATE_LABELS[state] if state != "ready" or self.listener else "Ready")
+        self.state_changed.emit(STATE_COLOURS[state])
 
     def _hush(self):
         if self.speaker:
@@ -364,6 +697,9 @@ class ChatWindow(QMainWindow):
         self.input.setEnabled(not busy)
         self.send_button.setEnabled(not busy)
         self.statusBar().showMessage(status or ("Ready" if not busy else ""))
+        if hasattr(self, "orb"):
+            self.set_state("thinking" if busy and self.ready else
+                           "starting" if busy else self._idle_state())
         if not busy:
             self.input.setFocus()
 
@@ -378,8 +714,23 @@ class ChatWindow(QMainWindow):
         index = self._hestia_entry()
         self.transcript[index] = ("hestia", self.transcript[index][1] + token)
         if self.speaking_turn:
-            self.speaker.feed(token)
+            self._speak(token)
         self._render_timer.start()
+
+    def _speak(self, token):
+        """Feed the speaker until SPOKEN_WORD_LIMIT words and the end of that sentence; hold back the rest."""
+        if self._held_back is not None:
+            self._held_back += token
+            return
+        end = None
+        if len((self._spoken_text + token).split()) >= SPOKEN_WORD_LIMIT:
+            end = _SENTENCE_END.search(token)
+        if end:
+            self.speaker.feed(token[:end.end()])
+            self._held_back = token[end.end():]
+        else:
+            self.speaker.feed(token)
+        self._spoken_text += token if not end else token[:end.end()]
 
     @Slot(str)
     def _on_tool(self, name):
@@ -399,21 +750,23 @@ class ChatWindow(QMainWindow):
             # Approvals are never given by voice: a misheard "yes", or one
             # from a video playing nearby, must not approve anything.
             self.speaker.say("I need you to approve that on screen.")
-        self.show_window()
-        dialog = ApprovalDialog(self.name, tool_name, arguments, after_web, parent=self)
+        # Just the dialog, on top — the main window stays in the tray.
+        dialog = ApprovalDialog(self.name, tool_name, arguments, after_web)
+        dialog.setWindowFlag(Qt.WindowStaysOnTopHint)
         self.bridge.answer(dialog.exec() == QDialog.Accepted)
 
     @Slot(str)
     def _on_question(self, question):
-        self.show_window()
-        answer = QMessageBox.question(self, self.name, question,
-                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        self.bridge.answer(answer == QMessageBox.Yes)
+        box = QMessageBox(QMessageBox.Question, self.name, question, QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint)
+        self.bridge.answer(box.exec() == QMessageBox.Yes)
 
     @Slot(str, list)
     def _on_ready(self, name, problems):
         self.name = name
         self.setWindowTitle(name)
+        self.title.setText(name)
         for problem in problems:
             self.transcript.append(("notice", f"[Tool server problem — {problem}. Its tools are unavailable this run.]"))
         self.ready = True
@@ -431,29 +784,21 @@ class ChatWindow(QMainWindow):
         if was_command and output:
             self.transcript.append(("output", output))
         elif self.speaking_turn:
-            self.speaker.flush()
+            held, self._held_back = self._held_back, None
+            if held and len(held.split()) >= 8:
+                self.speaker.flush()
+                self.speaker.say(MORE_QUESTION)
+                self._rest = held
+            else:  # only a few words more: just say them
+                self.speaker.feed(held or "")
+                self.speaker.flush()
         self._render()
         self._set_busy(False)
 
     # ---- display --------------------------------------------------------
     def _render(self):
         self._render_timer.stop()
-        blocks = []
-        for kind, text in self.transcript:
-            if kind == "you":
-                blocks.append(f"**You:** {text}")
-            elif kind == "hestia":
-                blocks.append(f"**{self.name}:** {text}")
-            elif kind == "notice":
-                blocks.append(f"*{text}*")
-            else:
-                blocks.append(f"```\n{text}\n```")
-        # NoHTML: replies and web content are shown as text, never as markup.
-        self.transcript_view.document().setMarkdown(
-            "\n\n".join(blocks),
-            QTextDocument.MarkdownFeature(QTextDocument.MarkdownDialectGitHub | QTextDocument.MarkdownNoHTML))
-        bar = self.transcript_view.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        self.transcript_view.show_messages(list(self.transcript), self.name)
 
     @Slot(QUrl)
     def open_link(self, url):
@@ -462,9 +807,15 @@ class ChatWindow(QMainWindow):
             QDesktopServices.openUrl(url)
 
     def show_window(self):
+        appearing = not self.isVisible()
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if appearing:  # a quick fade in
+            self.setWindowOpacity(0.0)
+            self._fade = QPropertyAnimation(self, b"windowOpacity", self, duration=180,
+                                            startValue=0.0, endValue=1.0, easingCurve=QEasingCurve.OutCubic)
+            self._fade.start()
 
     # ---- quitting -------------------------------------------------------
     def quit(self):
@@ -534,29 +885,47 @@ def set_start_with_windows(enabled):
         if os.path.exists(STARTUP_SHORTCUT):
             os.remove(STARTUP_SHORTCUT)
         return
+    _write_shortcut(STARTUP_SHORTCUT, "--background")
+
+
+def make_desktop_shortcut():
+    """A Hestia icon on the desktop: opens her window (and starts her, Ollama included, if needed)."""
     import win32com.client
+    path = os.path.join(win32com.client.Dispatch("WScript.Shell").SpecialFolders("Desktop"), "Hestia.lnk")
+    _write_shortcut(path)
+    return path
+
+
+def _write_shortcut(path, arguments=""):
+    """A shortcut running gui.py with pythonw, so no console window appears."""
+    import win32com.client
+    icon = ICON_PATH
+    if not os.path.exists(icon) or os.path.getmtime(icon) < os.path.getmtime(LOGO_PATH):
+        os.makedirs(os.path.dirname(icon), exist_ok=True)
+        hestia_icon().pixmap(256, 256).save(icon)
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(STARTUP_SHORTCUT)
+    link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(path)
     link.TargetPath = pythonw if os.path.exists(pythonw) else sys.executable
-    link.Arguments = f'"{os.path.join(_HERE, "gui.py")}" --background'
+    link.Arguments = f'"{os.path.join(_HERE, "gui.py")}" {arguments}'.strip()
     link.WorkingDirectory = _HERE
+    link.IconLocation = icon
     link.Description = "Hestia, your local assistant"
     link.Save()
 
 
-def hestia_icon():
-    """A warm circle with an H, drawn here so there's no image file to ship."""
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setBrush(QColor("#e07a3f"))
-    painter.setPen(Qt.NoPen)
-    painter.drawEllipse(2, 2, 60, 60)
-    painter.setPen(QColor("white"))
-    painter.setFont(QFont("Segoe UI", 30, QFont.Bold))
-    painter.drawText(pixmap.rect(), Qt.AlignCenter, "H")
-    painter.end()
+def hestia_icon(colour=None):
+    """
+    The brush-stroke H (assets/hestia.png, drawn by scripts/make_logo.py).
+    With a colour, a dot in the corner shows her state — for the tray.
+    """
+    pixmap = QPixmap(LOGO_PATH).scaled(256, 256, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    if colour:
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#0e0e10"), 14))
+        painter.setBrush(QColor(colour))
+        painter.drawEllipse(QPointF(196, 60), 50, 50)
+        painter.end()
     return QIcon(pixmap)
 
 
@@ -575,7 +944,7 @@ class Tray(QSystemTrayIcon):
         self.start_with_windows.toggled.connect(set_start_with_windows)
         self.mute = None
         if window.listener:
-            self.mute = menu.addAction(f"Mute microphone (wake word: “{voice.WAKE_PHRASE}”)")
+            self.mute = menu.addAction(f"Mute microphone (or say “{voice.MUTE_PHRASE}”)")
             self.mute.setCheckable(True)
             self.mute.setChecked(window.listener.muted)
             self.mute.toggled.connect(self._set_muted)
@@ -585,13 +954,25 @@ class Tray(QSystemTrayIcon):
         self.menu = menu
         self.activated.connect(self._on_activated)
         window.hidden_to_tray.connect(self._first_hide)
+        window.state_changed.connect(lambda colour: self.setIcon(hestia_icon(colour)))
+        window.mute_requested.connect(self._mute_by_voice)
         self._told = False
 
     def _set_muted(self, muted):
         self.window.listener.set_muted(muted)
+        if muted:
+            self.window.in_conversation = False  # she can't hear the rest of it
         if self.window.settings:
             self.window.settings.setValue("muted", muted)
         self.setToolTip("Hestia (microphone muted)" if muted else "Hestia")
+        if not self.window.busy:
+            self.window.set_state(self.window._idle_state())
+
+    def _mute_by_voice(self):
+        if self.mute and not self.mute.isChecked():
+            self.mute.setChecked(True)
+            self.showMessage("Microphone muted", "Hestia has stopped listening. "
+                             "Unmute from this icon's menu.", hestia_icon(STATE_COLOURS["muted"]), 4000)
 
     def _on_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -607,7 +988,13 @@ class Tray(QSystemTrayIcon):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Hestia")
+    app.setStyle("Fusion")
+    app.setFont(QFont(FONT, 10))
+    app.setStyleSheet(APP_STYLE)
     app.setQuitOnLastWindowClosed(False)  # closing the window hides it to the tray
+    if "--desktop-shortcut" in sys.argv:
+        print(f"Created {make_desktop_shortcut()}")
+        return
     if hand_off():
         return
     app.setWindowIcon(hestia_icon())
@@ -616,12 +1003,13 @@ def main():
     ears = Ears()
     listener = None
     if voice.listening_models_present():
-        listener = voice.Listener(on_wake=ears.wake.emit, on_text=ears.text.emit, on_nothing=ears.nothing.emit)
+        listener = voice.Listener(on_wake=ears.wake.emit, on_text=ears.text.emit,
+                                  on_command=ears.command.emit, awake=lambda: window.awake())
         listener.muted = settings.value("muted", False, type=bool)
     window = ChatWindow(speaker=speaker, settings=settings, listener=listener, chime=voice.chime)
     ears.wake.connect(window.heard_wake)
     ears.text.connect(window.heard_text)
-    ears.nothing.connect(window.heard_nothing)
+    ears.command.connect(window.heard_command)
     if listener:
         try:
             listener.start()
@@ -630,6 +1018,8 @@ def main():
     server = InstanceServer(INSTANCE_NAME, window.show_window)  # noqa: F841 (kept alive for the app's life)
     tray = Tray(window)
     tray.show()
+    window.set_state("thinking" if window.busy and window.ready else
+                     "starting" if window.busy else window._idle_state())
     if "--background" not in sys.argv:  # started at login: just the tray icon
         window.show()
     sys.exit(app.exec())

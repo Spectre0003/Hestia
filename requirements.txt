@@ -21,3 +21,6 @@ openwakeword>=0.6            # wake word
 faster-whisper>=1.1          # speech to text
 kokoro-onnx>=0.6             # text to speech
 sounddevice>=0.5             # microphone and speakers
+# Whisper on an NVIDIA GPU (voice.py falls back to the CPU without them)
+nvidia-cublas-cu12>=12.4; sys_platform == "win32"
+nvidia-cudnn-cu12>=9,<10; sys_platform == "win32"

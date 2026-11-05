@@ -103,6 +103,18 @@ class LaunchApplicationTest(unittest.TestCase):
             system_tools.launch_application("gone")
         self.assertIn("no longer exists", str(caught.exception))
 
+    def test_names_are_matched_loosely(self):
+        self.addCleanup(setattr, system_tools, "APPS", system_tools.APPS)
+        system_tools.APPS = {"googlechrome": ("Google Chrome", "c"), "steam": ("Steam", "s"),
+                             "steamsupportcenter": ("Steam Support Center", "x")}
+        self.assertEqual(system_tools._find_app("STEAM"), ("Steam", "s"))
+        self.assertEqual(system_tools._find_app("chrome"), ("Google Chrome", "c"))
+        self.assertIsNone(system_tools._find_app("firefox"))
+        self.assertIsNone(system_tools._find_app(" "))
+
+    def test_the_start_menu_is_found(self):
+        self.assertIn("notepad", system_tools._start_menu_apps())
+
 
 if __name__ == "__main__":
     unittest.main()

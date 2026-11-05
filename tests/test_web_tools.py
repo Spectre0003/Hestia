@@ -80,16 +80,21 @@ class WebSearchTest(unittest.TestCase):
             web_tools.web_search("anything")
         self.assertIn("json", str(caught.exception).lower())
 
-    def test_search_engine_not_running_message(self):
+    def test_search_engine_down_is_started_not_asked_about(self):
         with socket.socket() as s:  # a port nothing is listening on
             s.bind(("127.0.0.1", 0))
             closed = s.getsockname()[1]
         self.addCleanup(setattr, web_tools, "SEARXNG_URL", web_tools.SEARXNG_URL)
         web_tools.SEARXNG_URL = f"http://127.0.0.1:{closed}"
+        import threading
+        started = threading.Event()
+        self.addCleanup(setattr, web_tools.launcher, "start_search", web_tools.launcher.start_search)
+        web_tools.launcher.start_search = started.set
         with self.assertRaises(ToolError) as caught:
             web_tools.web_search("anything")
-        self.assertIn("isn't running", str(caught.exception))
-        self.assertIn("hestia-searxng", str(caught.exception))
+        self.assertIn("starting up", str(caught.exception))
+        self.assertIn("Don't ask them", str(caught.exception))
+        self.assertTrue(started.wait(5), "the search found it down but didn't start it")
 
 
 class PublicAddressTest(unittest.TestCase):

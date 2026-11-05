@@ -22,6 +22,7 @@ import ipaddress
 import json
 import socket
 import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,8 @@ import urllib.request
 import truststore
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+
+import launcher
 
 server = MCPServer("web_tools", log_level="WARNING")
 
@@ -43,14 +46,25 @@ MAX_QUERY_CHARS = 300
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 _NOT_RUNNING = (
-    "The search engine (SearXNG) isn't running. It's the 'hestia-searxng' Docker "
-    "container: Docker Desktop has to be running, then that container started."
+    "Web search is starting up: Docker and the search engine are being started now, "
+    "which takes about a minute. Tell the user it'll be ready in a minute and to ask "
+    "again then. Don't ask them to start Docker or any container — it's already being done."
 )
+_starting = threading.Lock()
+
+
+def _start_search_in_background():
+    """One attempt at a time; the search that found it down doesn't wait for it."""
+    def work():
+        with _starting:
+            launcher.start_search()
+    if not _starting.locked():
+        threading.Thread(target=work, daemon=True).start()
 
 
 @server.tool()
 def web_search(query: str) -> str:
-    """Search the web and return the top results, each with its title, address and a short snippet. Use this for anything current or outside what you know. When you use a result, say which address it came from. The query leaves this computer, so put only the topic in it — never the user's personal details, file contents or other private information."""
+    """Search the web and return the top results, each with its title, address and a short snippet. Use this for anything current or outside what you know — weather, news, prices, scores, recent events — and just search: don't ask the user whether to. When you use a result, say which address it came from. The query leaves this computer, so put only the topic in it — never the user's personal details, file contents or other private information."""
     query = (query or "").strip()
     if not query:
         raise ToolError("A search needs some words to search for.")
@@ -70,6 +84,7 @@ def web_search(query: str) -> str:
                             "format in searxng/settings.yml and restart the container.")
         raise ToolError(f"The search engine returned an error ({e.code}).")
     except (urllib.error.URLError, OSError):
+        _start_search_in_background()
         raise ToolError(_NOT_RUNNING)
     except ValueError:
         raise ToolError("The search engine sent back something that wasn't valid JSON.")

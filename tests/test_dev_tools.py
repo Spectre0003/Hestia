@@ -289,6 +289,30 @@ class ContainerNamesTest(unittest.TestCase):
         self.assertIn(("stop", "web-db"), self.calls)
 
 
+class DockerDesktopTest(unittest.TestCase):
+    def test_start_docker_starts_desktop_and_search_in_the_background(self):
+        import threading
+        started = threading.Event()
+        self.addCleanup(setattr, dev_tools.launcher, "start_search", dev_tools.launcher.start_search)
+        dev_tools.launcher.start_search = started.set
+        with mock.patch.object(dev_tools.subprocess, "run", return_value=_completed(1)):
+            self.assertIn("about a minute", dev_tools.start_docker())
+        self.assertTrue(started.wait(5))
+
+    def test_start_docker_when_its_already_running(self):
+        self.addCleanup(setattr, dev_tools.launcher, "start_search", dev_tools.launcher.start_search)
+        dev_tools.launcher.start_search = lambda: None
+        with mock.patch.object(dev_tools.subprocess, "run", return_value=_completed(0)):
+            self.assertIn("already running", dev_tools.start_docker())
+
+    def test_stop_docker_asks_docker_desktop_to_stop(self):
+        calls = []
+        self.addCleanup(setattr, dev_tools, "_docker", dev_tools._docker)
+        dev_tools._docker = lambda *args: (calls.append(args), (0, "", ""))[1]
+        self.assertIn("Stopping", dev_tools.stop_docker())
+        self.assertEqual(calls, [("desktop", "stop", "--detach")])
+
+
 def _docker_running():
     try:
         return support.subprocess.run(["docker", "info"], capture_output=True, timeout=20).returncode == 0
@@ -318,6 +342,8 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(tiers["list_containers"], tools.TIER_READ)
         self.assertEqual(tiers["start_container"], tools.TIER_WRITE)
         self.assertEqual(tiers["stop_container"], tools.TIER_WRITE)
+        self.assertEqual(tiers["start_docker"], tools.TIER_READ)
+        self.assertEqual(tiers["stop_docker"], tools.TIER_WRITE)
 
     def test_open_in_vscode_is_write_tier(self):
         import tools

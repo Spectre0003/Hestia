@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 
 import yaml
 from mcp.server.mcpserver import MCPServer
@@ -267,7 +268,8 @@ def _docker(*args):
     out = done.stdout.decode("utf-8", errors="replace").strip()
     err = done.stderr.decode("utf-8", errors="replace").strip()
     if done.returncode != 0 and _DOCKER_DOWN.search(err):
-        raise ToolError("Docker Desktop isn't running. Start it, wait for it to finish starting, then try again.")
+        raise ToolError("Docker Desktop isn't running. Start it with start_docker (it takes about "
+                        "a minute), then try again.")
     return done.returncode, out, err
 
 
@@ -318,6 +320,29 @@ def stop_container(name: str) -> str:
     if code != 0:
         raise ToolError(err or out or f"Couldn't stop {real}.")
     return f"Stopped {real}."
+
+
+@server.tool()
+def start_docker() -> str:
+    """Start Docker Desktop, and Hestia's web search container with it. Use this when the user asks to start or turn on Docker. It takes about a minute; this returns straight away."""
+    if subprocess.run(["docker", "info"], capture_output=True, timeout=DOCKER_TIMEOUT_SECONDS,
+                      creationflags=subprocess.CREATE_NO_WINDOW).returncode == 0:
+        threading.Thread(target=launcher.start_search, daemon=True).start()  # just the container
+        return "Docker Desktop is already running."
+    if not os.path.exists(launcher.DOCKER_DESKTOP):
+        raise ToolError("Docker Desktop isn't installed.")
+    # Launched outside this server's job (launcher), so it keeps running after Hestia quits.
+    threading.Thread(target=launcher.start_search, daemon=True).start()
+    return "Starting Docker Desktop — it takes about a minute. Web search comes back on with it."
+
+
+@server.tool()
+def stop_docker() -> str:
+    """Stop Docker Desktop, and with it every running container — Hestia's web search included. Use this when the user asks to stop, quit or turn off Docker. The user approves it before it happens."""
+    code, out, err = _docker("desktop", "stop", "--detach")
+    if code != 0:
+        raise ToolError(err or out or "Docker Desktop didn't stop.")
+    return "Stopping Docker Desktop. Web search is off until it's started again."
 
 
 if __name__ == "__main__":

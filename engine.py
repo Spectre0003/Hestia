@@ -20,7 +20,11 @@ This was chat.py's main loop until Stage 10; the behaviour is the same.
 """
 
 import os
+import shutil
+import subprocess
 import threading
+import time
+import urllib.request
 from datetime import datetime, timedelta
 
 import yaml
@@ -30,6 +34,7 @@ import embeddings
 import memory
 import storage
 import tools
+from servers import launcher
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -112,6 +117,7 @@ def build_system_prompt(persona):
         ("memory_style", "Using what you remember"),
         ("answer_shape", "Shape of an answer"),
         ("speech_style", "Speech style"),
+        ("voice_style", "Talking out loud"),
         ("formality_range", "Formality"),
     ]
     for key, label in style_fields:
@@ -206,6 +212,41 @@ def run_turn(conn, session_id, call_messages, ui):
     return reply, tool_turns
 
 
+OLLAMA_URL = "http://127.0.0.1:11434/api/version"
+OLLAMA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama")
+
+
+def _ollama_up():
+    try:
+        with urllib.request.urlopen(OLLAMA_URL, timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def start_services(wait_seconds=30):
+    """
+    Started from the desktop or at login, nothing else may be running yet.
+    Starts Ollama (its own tray app, as its installer sets up) and waits for
+    it; starts Docker Desktop and the SearXNG container in the background,
+    so web search works without anyone starting them. Problems are left for
+    the model setup below to report.
+    """
+    if not _ollama_up():
+        app = os.path.join(OLLAMA_DIR, "ollama app.exe")
+        command = [app] if os.path.exists(app) else [shutil.which("ollama") or "ollama", "serve"]
+        try:
+            subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+        except OSError:
+            return
+        end = time.monotonic() + wait_seconds
+        while time.monotonic() < end and not _ollama_up():
+            time.sleep(0.5)
+    # Web search: Docker Desktop (if it isn't running) and the SearXNG container,
+    # in the background — Docker takes about a minute and nothing waits for it.
+    threading.Thread(target=launcher.start_search, daemon=True).start()
+
+
 class Session:
     """
     One running Hestia: the model, the tool servers, the database, and
@@ -216,6 +257,7 @@ class Session:
     def __init__(self, ui, resume=False):
         self.ui = ui
         self.persona = load_personality()
+        start_services()
         try:
             # ~0.1 s, copies nothing, and is a no-op once the variant exists.
             create(model=MODEL_NAME, from_=BASE_MODEL, parameters={"num_ctx": NUM_CTX})

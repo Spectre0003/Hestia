@@ -60,6 +60,7 @@ def new_session(test, ui):
     """A Session with no Ollama and no tool servers: those are tested elsewhere."""
     temp_db(test)
     for module, name, value in ((engine, "create", lambda **kw: None), (tools, "start", lambda: []),
+                                (engine, "start_services", lambda: None),
                                 (memory, "extract_auto_memory", lambda *a, **kw: None)):
         test.addCleanup(setattr, module, name, getattr(module, name))
         setattr(module, name, value)
@@ -164,6 +165,29 @@ class StartupTest(unittest.TestCase):
     def test_missing_personality_is_an_error_not_an_exit(self):
         with self.assertRaises(engine.StartupError):
             engine.load_personality("no-such-personality.yaml")
+
+
+class StartServicesTest(unittest.TestCase):
+    def patch(self, name, value, module=engine):
+        self.addCleanup(setattr, module, name, getattr(module, name))
+        setattr(module, name, value)
+
+    def test_ollama_is_started_and_waited_for_when_its_not_running(self):
+        started, checks = [], []
+        self.patch("_ollama_up", lambda: checks.append(1) or len(started) > 0 and len(checks) > 3)
+        self.patch("Popen", lambda command, **kw: started.append(command), engine.subprocess)
+        self.patch("start_search", lambda: None, engine.launcher)
+        engine.start_services(wait_seconds=5)
+        self.assertEqual(len(started), 1)
+        self.assertTrue(engine._ollama_up())
+
+    def test_nothing_is_started_when_ollama_is_up(self):
+        started = []
+        self.patch("_ollama_up", lambda: True)
+        self.patch("Popen", lambda command, **kw: started.append(command), engine.subprocess)
+        self.patch("start_search", lambda: None, engine.launcher)
+        engine.start_services()
+        self.assertEqual(started, [])
 
 
 if __name__ == "__main__":

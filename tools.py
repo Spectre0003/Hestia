@@ -75,7 +75,9 @@ TOOL_TIERS = {
     "system_tools": {
         "get_system_info": TIER_READ,
         "list_processes": TIER_READ,
-        "launch_application": TIER_WRITE,
+        # Opening an installed app changes nothing and passes it no arguments, so
+        # it runs without an approval dialog: "open Spotify" by voice just works.
+        "launch_application": TIER_READ,
     },
     "dev_tools": {
         "git_status": TIER_READ,
@@ -85,6 +87,9 @@ TOOL_TIERS = {
         "list_containers": TIER_READ,
         "start_container": TIER_WRITE,
         "stop_container": TIER_WRITE,
+        # Starting Docker changes nothing the user has; stopping it stops every container.
+        "start_docker": TIER_READ,
+        "stop_docker": TIER_WRITE,
     },
     "web_tools": {
         "web_search": TIER_NETWORK,

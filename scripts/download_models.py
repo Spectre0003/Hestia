@@ -3,7 +3,7 @@ Download the voice models Hestia v1.0 uses into models/ (gitignored).
 Run once per machine:  venv\\Scripts\\python scripts\\download_models.py
 
   models/kokoro/    Kokoro text-to-speech, int8 (~88 MB) + voices (~26 MB)
-  models/whisper/   faster-whisper base.en speech-to-text (~140 MB)
+  models/whisper/   faster-whisper small.en (GPU, ~480 MB) and base.en (CPU fallback, ~140 MB)
   models/wakeword/  Silero speech detector, from openWakeWord (~2 MB)
 
 Everything runs on the CPU, so the GPU stays free for the chat model.
@@ -39,9 +39,9 @@ def main():
             openwakeword.utils.download_file(model["download_url"], wakeword)
 
     from faster_whisper import WhisperModel
-    print("Downloading Whisper base.en...")
-    WhisperModel("base.en", device="cpu", compute_type="int8",
-                 download_root=os.path.join(MODELS, "whisper"))
+    for name in ("small.en", "base.en"):
+        print(f"Downloading Whisper {name}...")
+        WhisperModel(name, device="cpu", compute_type="int8", download_root=os.path.join(MODELS, "whisper"))
     print("Done.")
 
 

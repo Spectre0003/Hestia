@@ -32,8 +32,10 @@ venv\Scripts\python scripts\download_models.py
 
 Then either:
 
-- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** and then what you need — replies to things you say are spoken. Approvals are always a click, never your voice.
+- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** to start a conversation: from then on just talk — she answers out loud and waits for you, no wake word needed — until **"Fall Hestia"** ends it. **"Mute Hestia"** closes the microphone until you unmute it from the tray. She can open any app in your Start menu. She can start and stop Docker for you ("start Docker", "turn off Docker"), and asks before reading out a long answer. Talking to her never brings up the window; approvals are always a click, never your voice.
 - `venv\Scripts\python chat.py` — the same Hestia in a terminal.
+
+For a desktop icon, run `venv\Scripts\python gui.py --desktop-shortcut` once. Hestia starts Ollama herself if it isn't running, and her SearXNG search container if Docker is.
 
 Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example` files), and `docker compose -f searxng/compose.yaml up -d` for web search.
 

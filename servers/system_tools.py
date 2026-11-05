@@ -9,13 +9,15 @@ blast radius obvious at a glance.
 
 As with hestia_core, this file only describes and runs tools. Whether a
 tool is *allowed* to run is decided in tools.py (TOOL_TIERS), never here.
-What a tool is allowed to reach — which applications may be launched —
+What a tool is allowed to reach — which applications may be launched (the Start menu's and apps.yaml's) —
 is scoped here, the same way the workspace root is scoped in hestia_core.
 
 Run directly (`python servers/system_tools.py`) it just waits for an MCP
 client on stdin; chat.py starts it itself.
 """
 
+import difflib
+import json
 import os
 import platform
 import re
@@ -66,9 +68,45 @@ def _load_apps():
     }
 
 
-# Read once at startup. Editing apps.yaml takes effect on the next run,
-# which also means the list can't change midway through a conversation.
-APPS = _load_apps()
+def _start_menu_apps():
+    """
+    Every app in the Start menu, {normalised: (name, target)}: what Windows
+    itself lists (Get-StartApps), Store apps included. Targets still come
+    from Windows, never from the model. Fails soft to {}.
+    """
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-StartApps | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+        found = json.loads(out or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+    apps = {}
+    for app in found if isinstance(found, list) else [found]:
+        name, app_id = str(app.get("Name") or ""), str(app.get("AppID") or "")
+        if not name or not app_id or "uninstall" in name.lower():
+            continue
+        is_path = bool(os.path.splitdrive(app_id)[0])
+        apps[_normalise(name)] = (name, app_id if is_path else "shell:AppsFolder\\" + app_id)
+    return apps
+
+
+def _find_app(name):
+    """The (display, target) for a loosely given name, or None."""
+    key = _normalise(name)
+    if not key:
+        return None
+    if key in APPS:
+        return APPS[key]
+    # "chrome" -> "Google Chrome", "vs code" -> "Visual Studio Code" is apps.yaml's job.
+    partial = sorted((k for k in APPS if key in k), key=len)
+    return APPS[partial[0]] if partial else None
+
+
+# Read once at startup: apps.yaml entries win over the Start menu's. Apps
+# installed later appear on the next run.
+APPS = {**_start_menu_apps(), **_load_apps()}
 _APP_NAMES = sorted(display for display, _ in APPS.values())
 
 
@@ -214,30 +252,26 @@ def list_processes(name_filter: str = "") -> str:
 
 @server.tool(
     description=(
-        "Open an application on this computer. The applications available are: "
-        + ", ".join(_APP_NAMES) + ". Names are matched loosely, so spacing, "
-        "capitalisation and punctuation do not matter — pass whatever the user "
-        "called it. If you are not sure whether something is available, call this "
-        "anyway: the result will say so and list what is. Do not refuse on your "
-        "own without calling it."
+        "Open an application on this computer: any app in the Windows Start menu "
+        "(for example " + ", ".join(_APP_NAMES[:12]) + ", and more). Names are "
+        "matched loosely — pass whatever the user called it. If you are not sure "
+        "whether something is installed, call this anyway: the result will say so "
+        "and suggest close names. Do not refuse on your own without calling it."
         if _APP_NAMES else
-        "Open an application on this computer. No applications are currently "
-        "configured, so this tool cannot open anything; say so if asked."
+        "Open an application on this computer. No applications could be found, "
+        "so this tool cannot open anything; say so if asked."
     )
 )
 def launch_application(name: str) -> str:
     """Open an application on this computer."""
     if not APPS:
-        raise ToolError(
-            "No applications are configured in apps.yaml, so nothing can be opened."
-        )
+        raise ToolError("No applications could be found, so nothing can be opened.")
 
-    entry = APPS.get(_normalise(name))
+    entry = _find_app(name)
     if entry is None:
-        raise ToolError(
-            f"'{name}' isn't on the list of applications that can be opened. "
-            f"The list is: {', '.join(_APP_NAMES)}."
-        )
+        close = difflib.get_close_matches(name, _APP_NAMES, n=5, cutoff=0.4)
+        raise ToolError(f"No installed app called '{name}' was found."
+                        + (f" Close names: {', '.join(close)}." if close else ""))
 
     display, target = entry
     # explorer.exe opens .exe, .lnk, URI protocols and shell: targets alike,
@@ -249,8 +283,7 @@ def launch_application(name: str) -> str:
     if is_path and not os.path.exists(target):
         # Explorer given a missing path quietly opens Documents instead.
         raise ToolError(
-            f"Couldn't open {display}: its entry in apps.yaml points somewhere "
-            f"that no longer exists ({target})."
+            f"Couldn't open {display}: it points somewhere that no longer exists ({target})."
         )
     launcher.launch(["explorer.exe", target])
     return f"Opened {display}."

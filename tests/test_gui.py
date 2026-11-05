@@ -39,6 +39,12 @@ class FakeSession:
     def handle(self, text):
         if text == "memories":
             return "[No memories stored yet.]", True
+        if text in ("long", gui.SUMMARY_REQUEST):
+            sentence = "This sentence has exactly ten words in it, you see. "
+            for _ in range(3 if text != "long" else 12):  # 120 words for "long"
+                for word in sentence.split(" "):
+                    self.ui.text(word + " ")
+            return "", False
         if text == "save it":
             self.approved = self.ui.approve("write_file", {"path": "a.txt"}, False)
         self.ui.text("Hello ")
@@ -145,6 +151,13 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(asked, ["write_file"])
         self.assertIs(self.window.worker.session.approved, False)
 
+    def test_html_in_a_reply_is_shown_not_rendered(self):
+        html = gui._markdown_html('**bold** <b onclick="x">tag</b> <img src="file:///C:/x.png">')
+        self.assertIn("&lt;b onclick", html)
+        self.assertIn("&lt;img", html)
+        self.assertNotIn("<img", html)
+        self.assertIn("font-weight", html)  # Markdown itself still works
+
     def test_links_only_open_when_they_are_web_links(self):
         opened = []
         original = gui.QDesktopServices.openUrl
@@ -212,6 +225,8 @@ class BackgroundTest(unittest.TestCase):
 
 
 class RecordingSpeaker:
+    speaking = False
+
     def __init__(self):
         self.fed, self.flushed, self.stopped, self.said = [], 0, 0, []
 
@@ -283,10 +298,32 @@ class ListeningTest(unittest.TestCase):
         self.addCleanup(self.window.shutdown)
         self.assertTrue(wait_until(lambda: self.window.ready))
 
-    def test_the_wake_word_cuts_her_off_and_shows_listening(self):
+    def test_rise_hestia_cuts_her_off_and_starts_a_conversation(self):
         self.window.heard_wake()
         self.assertGreaterEqual(self.speaker.stopped, 1)
-        self.assertIn("Listening", self.window.statusBar().currentMessage())
+        self.assertTrue(self.window.in_conversation)
+        self.assertTrue(self.window.awake())
+        self.assertEqual(self.window.orb.state, "listening")
+
+    def test_she_isnt_listening_for_turns_while_thinking_or_talking(self):
+        self.window.heard_wake()
+        self.window.busy = True
+        self.assertFalse(self.window.awake())
+        self.window.busy = False
+        self.speaker.speaking = True
+        self.assertFalse(self.window.awake())
+        self.window._refresh_state()
+        self.assertEqual(self.window.orb.state, "speaking")
+        self.speaker.speaking = False
+        self.assertTrue(self.window.awake())
+
+    def test_fall_hestia_ends_the_conversation_with_a_word(self):
+        self.window.heard_wake()
+        self.window.heard_command("hush")
+        self.assertFalse(self.window.in_conversation)
+        self.assertFalse(self.window.awake())
+        self.assertEqual(len(self.speaker.said), 1)
+        self.assertEqual(self.window.orb.state, "ready")
 
     def test_what_was_heard_becomes_a_spoken_turn(self):
         self.window.heard_text("hi there")
@@ -301,6 +338,65 @@ class ListeningTest(unittest.TestCase):
         self.assertEqual(self.window.transcript, before)
         self.window.busy = False
 
+    def test_mute_hestia_ends_the_conversation_and_asks_to_mute(self):
+        muted = []
+        self.window.mute_requested.connect(lambda: muted.append(True))
+        self.window.heard_wake()
+        self.window.heard_command("mute")
+        self.assertEqual(muted, [True])
+        self.assertFalse(self.window.in_conversation)
+
+    def test_an_approval_doesnt_bring_up_the_window(self):
+        original = gui.ApprovalDialog.exec
+        self.addCleanup(setattr, gui.ApprovalDialog, "exec", original)
+        gui.ApprovalDialog.exec = lambda dialog: QDialog.Rejected
+        self.window.hide()
+        self.window.send_spoken("save it")
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+        self.assertFalse(self.window.isVisible())
+
+    def long_answer(self):
+        self.window.send_spoken("long")
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+        return " ".join(self.speaker.fed)
+
+    def test_a_long_answer_is_read_up_to_the_limit_then_she_asks(self):
+        spoken = self.long_answer()
+        words = len(spoken.split())
+        self.assertGreaterEqual(words, gui.SPOKEN_WORD_LIMIT)
+        self.assertLess(words, gui.SPOKEN_WORD_LIMIT + 12)  # finishes the sentence, then stops
+        self.assertTrue(spoken.rstrip().endswith("."))
+        self.assertEqual(self.speaker.said, [gui.MORE_QUESTION])
+        self.assertEqual(len(self.window.transcript[-1][1].split()), 120)  # the window shows it all
+
+    def test_read_the_rest(self):
+        self.long_answer()
+        before = len(" ".join(self.speaker.fed).split())
+        self.window.heard_text("Yeah, read the rest.")
+        self.assertGreater(len(" ".join(self.speaker.fed).split()), before + 30)
+        self.assertIsNone(self.window._rest)
+
+    def test_sum_it_up_asks_her_for_a_summary(self):
+        self.long_answer()
+        self.window.heard_text("Just sum it up")
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+        self.assertEqual(self.window.transcript[-2], ("you", "Just sum it up"))  # what you said is shown
+
+    def test_no_thanks_and_a_new_question(self):
+        self.long_answer()
+        self.window.heard_text("No, that's fine.")
+        self.assertEqual(self.speaker.said[-1], "Okay.")
+        self.long_answer()
+        self.window.heard_text("what time is it")
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+        self.assertEqual(self.window.transcript[-2], ("you", "what time is it"))
+
+    def test_a_short_answer_is_just_spoken(self):
+        self.window.send_spoken("hi")
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+        self.assertEqual(self.speaker.said, [])
+        self.assertIsNone(self.window._rest)
+
     def test_stop_words_just_hush_her(self):
         for words in ("stop", "Never mind.", "be quiet"):
             before = list(self.window.transcript)
@@ -314,6 +410,15 @@ class StartWithWindowsTest(unittest.TestCase):
         folder = support.temp_folder(self)
         self.addCleanup(setattr, gui, "STARTUP_SHORTCUT", gui.STARTUP_SHORTCUT)
         gui.STARTUP_SHORTCUT = os.path.join(folder, "Hestia.lnk")
+        self.addCleanup(setattr, gui, "ICON_PATH", gui.ICON_PATH)
+        gui.ICON_PATH = os.path.join(folder, "hestia.ico")
+
+    def test_shortcuts_carry_the_hestia_icon(self):
+        gui.set_start_with_windows(True)
+        import win32com.client
+        link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(gui.STARTUP_SHORTCUT)
+        self.assertTrue(link.IconLocation.lower().startswith(gui.ICON_PATH.lower()))
+        self.assertTrue(os.path.getsize(gui.ICON_PATH) > 0)
 
     def test_turning_it_on_and_off(self):
         self.assertFalse(gui.starts_with_windows())
