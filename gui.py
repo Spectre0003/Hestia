@@ -194,7 +194,13 @@ class Worker(QObject):
 
     @Slot(str)
     def handle(self, text):
-        output, was_command = self.session.handle(text)
+        try:
+            output, was_command = self.session.handle(text)
+        except Exception as e:
+            # The window must never be left waiting: there's no console to show
+            # the error when Hestia runs in the background, so it goes on screen.
+            self.bridge.notice(f"[Something went wrong: {e}]")
+            output, was_command = "", True
         self.done.emit(output, was_command)
 
     @Slot()

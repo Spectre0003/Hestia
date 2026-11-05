@@ -173,6 +173,26 @@ class ListenerTest(unittest.TestCase):
         self.feed(listener, *[SILENT] * 4, *[SPEECH] * 5, *[SILENT] * 12)
         self.assertEqual(self.events[-1], "nothing")
 
+    def test_a_frame_that_fails_doesnt_stop_listening(self):
+        listener = self.make()
+        calls = []
+
+        def flaky(frame):
+            calls.append(frame)
+            if len(calls) == 1:
+                raise RuntimeError("bad frame")
+
+        listener.process = flaky
+        listener._stream = object()  # as if the microphone were open
+        import threading
+        worker = threading.Thread(target=listener._consume, daemon=True)
+        worker.start()
+        for _ in range(3):
+            listener._frames.put(SILENT)
+        listener._frames.put(None)
+        worker.join(timeout=3)
+        self.assertEqual(len(calls), 3, "the listening thread died on the first bad frame")
+
     def test_mute_closes_the_microphone(self):
         opened = []
 

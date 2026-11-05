@@ -369,7 +369,11 @@ class Listener:
             if frame is None:
                 return
             if self._stream is not None:
-                self.process(frame)
+                try:
+                    self.process(frame)
+                except Exception:
+                    # One bad frame must not end listening for the rest of the day.
+                    self._reset()
 
     def set_muted(self, muted):
         """Muted means the microphone stream is closed, not merely ignored."""

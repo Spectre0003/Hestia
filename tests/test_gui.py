@@ -52,6 +52,11 @@ class FakeSession:
         self.closed = True
 
 
+class BrokenSession(FakeSession):
+    def handle(self, text):
+        raise RuntimeError("the database is locked")
+
+
 class ApprovalDialogTest(unittest.TestCase):
     def test_approval_dialog_defaults_to_deny(self):
         dialog = gui.ApprovalDialog("Hestia", "write_file", {"path": "a.txt"}, after_web=False)
@@ -149,6 +154,17 @@ class WindowTest(unittest.TestCase):
         for link in ("https://en.wikipedia.org/wiki/Hestia", "file:///C:/Windows/win.ini", "javascript:alert(1)"):
             self.window.open_link(QUrl(link))
         self.assertEqual(opened, ["https://en.wikipedia.org/wiki/Hestia"])
+
+
+class FailureTest(unittest.TestCase):
+    def test_an_unexpected_error_doesnt_leave_the_window_stuck(self):
+        window = gui.ChatWindow(session_factory=BrokenSession)
+        self.addCleanup(window.shutdown)
+        self.assertTrue(wait_until(lambda: window.ready))
+        window.input.setText("hi")
+        window.send()
+        self.assertTrue(wait_until(lambda: window.input.isEnabled()), "stuck on Thinking")
+        self.assertIn("the database is locked", window.transcript_view.toPlainText())
 
 
 class BackgroundTest(unittest.TestCase):
