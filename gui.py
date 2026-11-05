@@ -22,8 +22,8 @@ import sys
 import threading
 import unicodedata
 
-from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QTextDocument
+from PySide6.QtCore import QObject, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPixmap, QTextDocument
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 import engine
+import voice
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -206,8 +207,12 @@ class ChatWindow(QMainWindow):
     _stop_engine = Signal()
     hidden_to_tray = Signal()
 
-    def __init__(self, session_factory=engine.Session):
+    def __init__(self, session_factory=engine.Session, speaker=None, settings=None):
+        """speaker: a voice.Speaker, or None for a silent window. settings: a QSettings to remember choices in."""
         super().__init__()
+        self.speaker = speaker
+        self.settings = settings
+        self.speaking_turn = False  # whether the reply now streaming is being spoken
         self.name = "Hestia"
         self.ready = False
         self.busy = False
@@ -244,6 +249,18 @@ class ChatWindow(QMainWindow):
             action = QAction(label, self)
             action.triggered.connect(lambda checked=False, c=command: self.send(c))
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        self.speak_all = QAction("Speak all replies", self, checkable=True)
+        self.speak_all.setToolTip("Replies to what you say are always spoken; this speaks typed ones too.")
+        self.speak_all.setChecked(bool(settings and settings.value("speak_all", False, type=bool)))
+        self.speak_all.toggled.connect(lambda on: settings and settings.setValue("speak_all", on))
+        self.speak_all.setEnabled(speaker is not None)
+        toolbar.addAction(self.speak_all)
+        self.stop_speaking = QAction("Stop speaking", self)
+        self.stop_speaking.setShortcut(QKeySequence(Qt.Key_Escape))
+        self.stop_speaking.triggered.connect(self._hush)
+        self.stop_speaking.setEnabled(speaker is not None)
+        toolbar.addAction(self.stop_speaking)
         self.toolbar = toolbar
 
         self._render_timer = QTimer(self, singleShot=True, interval=RENDER_EVERY_MS)
@@ -275,16 +292,26 @@ class ChatWindow(QMainWindow):
         self._idle_timer.start()
 
     # ---- sending -------------------------------------------------------
-    def send(self, text=None):
+    def send(self, text=None, spoken=False):
         text = (self.input.text() if text is None else text).strip()
         if not text or not self.ready or self.busy:
             return
+        self._hush()  # a new message cuts off whatever she was saying
+        self.speaking_turn = bool(self.speaker) and (spoken or self.speak_all.isChecked())
         self.input.clear()
         if text.lower() not in ("memories", "tools", "new"):
             self.transcript.append(("you", text))
         self._render()
         self._set_busy(True, "Thinking…")
         self._submit.emit(text)
+
+    def send_spoken(self, text):
+        """A turn that came from the microphone: its reply is spoken."""
+        self.send(text, spoken=True)
+
+    def _hush(self):
+        if self.speaker:
+            self.speaker.stop()
 
     def _set_busy(self, busy, status=""):
         self.busy = busy
@@ -304,6 +331,8 @@ class ChatWindow(QMainWindow):
     def _on_text(self, token):
         index = self._hestia_entry()
         self.transcript[index] = ("hestia", self.transcript[index][1] + token)
+        if self.speaking_turn:
+            self.speaker.feed(token)
         self._render_timer.start()
 
     @Slot(str)
@@ -320,6 +349,10 @@ class ChatWindow(QMainWindow):
 
     @Slot(str, object, bool)
     def _on_approval(self, tool_name, arguments, after_web):
+        if self.speaking_turn:
+            # Approvals are never given by voice: a misheard "yes", or one
+            # from a video playing nearby, must not approve anything.
+            self.speaker.say("I need you to approve that on screen.")
         self.show_window()
         dialog = ApprovalDialog(self.name, tool_name, arguments, after_web, parent=self)
         self.bridge.answer(dialog.exec() == QDialog.Accepted)
@@ -351,6 +384,8 @@ class ChatWindow(QMainWindow):
     def _on_done(self, output, was_command):
         if was_command and output:
             self.transcript.append(("output", output))
+        elif self.speaking_turn:
+            self.speaker.flush()
         self._render()
         self._set_busy(False)
 
@@ -396,6 +431,8 @@ class ChatWindow(QMainWindow):
         if not self.thread.isRunning():
             return
         self._idle_timer.stop()
+        if self.speaker:
+            self.speaker.close()
         self.bridge.shutdown()
         self._stop_engine.emit()
         self.thread.wait(30_000)
@@ -514,7 +551,8 @@ def main():
     if hand_off():
         return
     app.setWindowIcon(hestia_icon())
-    window = ChatWindow()
+    speaker = voice.Speaker() if voice.voice_models_present() else None
+    window = ChatWindow(speaker=speaker, settings=QSettings("Hestia", "Hestia"))
     server = InstanceServer(INSTANCE_NAME, window.show_window)  # noqa: F841 (kept alive for the app's life)
     tray = Tray(window)
     tray.show()

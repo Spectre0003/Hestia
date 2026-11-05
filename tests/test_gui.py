@@ -195,6 +195,71 @@ class BackgroundTest(unittest.TestCase):
         self.assertEqual(result, [True])
 
 
+class RecordingSpeaker:
+    def __init__(self):
+        self.fed, self.flushed, self.stopped, self.said = [], 0, 0, []
+
+    def feed(self, token):
+        self.fed.append(token)
+
+    def flush(self):
+        self.flushed += 1
+
+    def stop(self):
+        self.stopped += 1
+
+    def say(self, text):
+        self.said.append(text)
+
+    def close(self):
+        pass
+
+
+class SpeakingTest(unittest.TestCase):
+    def setUp(self):
+        self.speaker = RecordingSpeaker()
+        self.window = gui.ChatWindow(session_factory=FakeSession, speaker=self.speaker)
+        self.addCleanup(self.window.shutdown)
+        self.window.speak_all.setChecked(False)
+        self.assertTrue(wait_until(lambda: self.window.ready))
+
+    def finish(self):
+        self.assertTrue(wait_until(lambda: not self.window.busy))
+
+    def test_typed_replies_stay_text_by_default(self):
+        self.window.input.setText("hi")
+        self.window.send()
+        self.finish()
+        self.assertEqual(self.speaker.fed, [])
+
+    def test_spoken_turns_are_answered_aloud(self):
+        self.window.send_spoken("hi")
+        self.finish()
+        self.assertEqual("".join(self.speaker.fed), "Hello there.")
+        self.assertEqual(self.speaker.flushed, 1)
+
+    def test_speak_all_replies_speaks_typed_ones_too(self):
+        self.window.speak_all.setChecked(True)
+        self.window.input.setText("hi")
+        self.window.send()
+        self.finish()
+        self.assertEqual("".join(self.speaker.fed), "Hello there.")
+
+    def test_a_new_message_cuts_her_off(self):
+        self.window.input.setText("hi")
+        self.window.send()
+        self.finish()
+        self.assertGreaterEqual(self.speaker.stopped, 1)
+
+    def test_approval_in_a_spoken_turn_is_announced_out_loud(self):
+        original = gui.ApprovalDialog.exec
+        self.addCleanup(setattr, gui.ApprovalDialog, "exec", original)
+        gui.ApprovalDialog.exec = lambda dialog: QDialog.Rejected
+        self.window.send_spoken("save it")
+        self.finish()
+        self.assertTrue(any("approve" in s for s in self.speaker.said))
+
+
 class StartWithWindowsTest(unittest.TestCase):
     def setUp(self):
         folder = support.temp_folder(self)
