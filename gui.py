@@ -44,6 +44,9 @@ INSTANCE_NAME = f"hestia-{getpass.getuser()}"
 STARTUP_SHORTCUT = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
                                 "Start Menu", "Programs", "Startup", "Hestia.lnk")
 
+# Said on their own after the wake word, these just stop her talking.
+STOP_WORDS = {"stop", "cancel", "never mind", "nevermind", "be quiet", "quiet", "shush", "that's enough"}
+
 IDLE_CHECK_MS = 60_000
 RENDER_EVERY_MS = 50  # streaming re-renders are batched, not one per token
 
@@ -161,6 +164,13 @@ class Bridge(QObject):
         self._answered.set()
 
 
+class Ears(QObject):
+    """Carries the listener's callbacks (its own threads) to the window (the main thread)."""
+    wake = Signal()
+    text = Signal(str)
+    nothing = Signal()
+
+
 class Worker(QObject):
     """Owns the engine Session; every slot runs on the worker thread."""
     ready = Signal(str, list)
@@ -207,10 +217,16 @@ class ChatWindow(QMainWindow):
     _stop_engine = Signal()
     hidden_to_tray = Signal()
 
-    def __init__(self, session_factory=engine.Session, speaker=None, settings=None):
-        """speaker: a voice.Speaker, or None for a silent window. settings: a QSettings to remember choices in."""
+    def __init__(self, session_factory=engine.Session, speaker=None, settings=None, listener=None, chime=None):
+        """
+        speaker: a voice.Speaker, or None for a silent window. settings: a
+        QSettings to remember choices in. listener: a voice.Listener, stopped
+        on quit. chime: called when the wake word is heard.
+        """
         super().__init__()
         self.speaker = speaker
+        self.listener = listener
+        self.chime = chime
         self.settings = settings
         self.speaking_turn = False  # whether the reply now streaming is being spoken
         self.name = "Hestia"
@@ -308,6 +324,30 @@ class ChatWindow(QMainWindow):
     def send_spoken(self, text):
         """A turn that came from the microphone: its reply is spoken."""
         self.send(text, spoken=True)
+
+    # ---- what the microphone hears (main thread) -------------------------
+    @Slot()
+    def heard_wake(self):
+        self._hush()
+        if self.chime:
+            self.chime()
+        self.statusBar().showMessage("Listening…")
+
+    @Slot(str)
+    def heard_text(self, text):
+        if text.lower().strip(" .!?,") in STOP_WORDS:
+            self._hush()
+            self.statusBar().showMessage("Okay.", 3000)
+            return
+        if self.busy or not self.ready:
+            # Never queued: a spoken "yes" must not answer an open approval dialog.
+            self.statusBar().showMessage("Still on the last request — ask again in a moment.", 4000)
+            return
+        self.send_spoken(text)
+
+    @Slot()
+    def heard_nothing(self):
+        self.statusBar().showMessage("Didn't catch that.", 3000)
 
     def _hush(self):
         if self.speaker:
@@ -431,6 +471,8 @@ class ChatWindow(QMainWindow):
         if not self.thread.isRunning():
             return
         self._idle_timer.stop()
+        if self.listener:
+            self.listener.stop()
         if self.speaker:
             self.speaker.close()
         self.bridge.shutdown()
@@ -525,13 +567,25 @@ class Tray(QSystemTrayIcon):
         self.start_with_windows.setCheckable(True)
         self.start_with_windows.setChecked(starts_with_windows())
         self.start_with_windows.toggled.connect(set_start_with_windows)
-        self.menu_quit_separator = menu.addSeparator()
+        self.mute = None
+        if window.listener:
+            self.mute = menu.addAction(f"Mute microphone (wake word: “{voice.WAKE_PHRASE}”)")
+            self.mute.setCheckable(True)
+            self.mute.setChecked(window.listener.muted)
+            self.mute.toggled.connect(self._set_muted)
+        menu.addSeparator()
         menu.addAction("Quit Hestia", window.quit)
         self.setContextMenu(menu)
         self.menu = menu
         self.activated.connect(self._on_activated)
         window.hidden_to_tray.connect(self._first_hide)
         self._told = False
+
+    def _set_muted(self, muted):
+        self.window.listener.set_muted(muted)
+        if self.window.settings:
+            self.window.settings.setValue("muted", muted)
+        self.setToolTip("Hestia (microphone muted)" if muted else "Hestia")
 
     def _on_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
@@ -551,8 +605,22 @@ def main():
     if hand_off():
         return
     app.setWindowIcon(hestia_icon())
+    settings = QSettings("Hestia", "Hestia")
     speaker = voice.Speaker() if voice.voice_models_present() else None
-    window = ChatWindow(speaker=speaker, settings=QSettings("Hestia", "Hestia"))
+    ears = Ears()
+    listener = None
+    if voice.listening_models_present():
+        listener = voice.Listener(on_wake=ears.wake.emit, on_text=ears.text.emit, on_nothing=ears.nothing.emit)
+        listener.muted = settings.value("muted", False, type=bool)
+    window = ChatWindow(speaker=speaker, settings=settings, listener=listener, chime=voice.chime)
+    ears.wake.connect(window.heard_wake)
+    ears.text.connect(window.heard_text)
+    ears.nothing.connect(window.heard_nothing)
+    if listener:
+        try:
+            listener.start()
+        except Exception as e:  # no microphone, or Windows privacy settings blocking it
+            window.transcript.append(("notice", f"[Microphone unavailable, so the wake word is off: {e}]"))
     server = InstanceServer(INSTANCE_NAME, window.show_window)  # noqa: F841 (kept alive for the app's life)
     tray = Tray(window)
     tray.show()

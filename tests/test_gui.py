@@ -260,6 +260,39 @@ class SpeakingTest(unittest.TestCase):
         self.assertTrue(any("approve" in s for s in self.speaker.said))
 
 
+class ListeningTest(unittest.TestCase):
+    def setUp(self):
+        self.speaker = RecordingSpeaker()
+        self.window = gui.ChatWindow(session_factory=FakeSession, speaker=self.speaker)
+        self.addCleanup(self.window.shutdown)
+        self.assertTrue(wait_until(lambda: self.window.ready))
+
+    def test_the_wake_word_cuts_her_off_and_shows_listening(self):
+        self.window.heard_wake()
+        self.assertGreaterEqual(self.speaker.stopped, 1)
+        self.assertIn("Listening", self.window.statusBar().currentMessage())
+
+    def test_what_was_heard_becomes_a_spoken_turn(self):
+        self.window.heard_text("hi there")
+        self.assertTrue(wait_until(lambda: not self.window.busy and self.speaker.flushed))
+        self.assertIn("hi there", self.window.transcript_view.toPlainText())
+
+    def test_speech_during_a_busy_turn_is_ignored(self):
+        # So a spoken "yes" can never answer an approval dialog.
+        self.window.busy = True
+        before = list(self.window.transcript)
+        self.window.heard_text("yes")
+        self.assertEqual(self.window.transcript, before)
+        self.window.busy = False
+
+    def test_stop_words_just_hush_her(self):
+        for words in ("stop", "Never mind.", "be quiet"):
+            before = list(self.window.transcript)
+            self.window.heard_text(words)
+            self.assertEqual(self.window.transcript, before)
+        self.assertGreaterEqual(self.speaker.stopped, 3)
+
+
 class StartWithWindowsTest(unittest.TestCase):
     def setUp(self):
         folder = support.temp_folder(self)

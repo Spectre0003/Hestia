@@ -100,5 +100,125 @@ class SpeakerTest(unittest.TestCase):
         self.assertTrue(self.wait_for(lambda: played == ["I need you to approve that on screen."]))
 
 
+import numpy as np  # noqa: E402
+
+SILENT = np.zeros(voice.FRAME, dtype=np.int16)
+
+
+class FakeWake:
+    def __init__(self, fire_on):
+        self.frames, self.fire_on = 0, set(fire_on)
+
+    def predict(self, frame):
+        self.frames += 1
+        return {"hey_jarvis": 1.0 if self.frames in self.fire_on else 0.0}
+
+    def reset(self):
+        pass
+
+
+class FakeVAD:
+    """Says 'speech' for frames whose first sample is non-zero."""
+
+    def predict(self, frame, frame_size=640):
+        return 0.9 if frame[0] else 0.0
+
+
+SPEECH = np.full(voice.FRAME, 1000, dtype=np.int16)
+
+
+class ListenerTest(unittest.TestCase):
+    def make(self, transcript="what time is it", fire_on=(4,)):
+        self.events = []
+        self.heard_audio = []
+
+        def transcribe(audio):
+            self.heard_audio.append(audio)
+            return transcript
+
+        listener = voice.Listener(
+            on_wake=lambda: self.events.append("wake"),
+            on_text=lambda text: self.events.append(("text", text)),
+            on_nothing=lambda: self.events.append("nothing"),
+            wake_model=FakeWake(fire_on), vad=FakeVAD(), transcribe=transcribe,
+            background=lambda work: work())
+        return listener
+
+    def feed(self, listener, *frames):
+        for frame in frames:
+            listener.process(frame)
+
+    def test_wake_then_speech_then_silence_gives_text(self):
+        listener = self.make()
+        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 10, *[SILENT] * 12)
+        self.assertEqual(self.events, ["wake", ("text", "what time is it")])
+        self.assertEqual(len(self.heard_audio), 1)
+
+    def test_wake_but_nothing_said_gives_up(self):
+        listener = self.make()
+        self.feed(listener, *[SILENT] * 4, *[SILENT] * int(voice.WAIT_FOR_SPEECH_SECONDS * 12.5 + 5))
+        self.assertEqual(self.events, ["wake", "nothing"])
+        self.assertEqual(self.heard_audio, [])
+
+    def test_long_speech_is_cut_off(self):
+        listener = self.make()
+        self.feed(listener, *[SILENT] * 4, *[SPEECH] * int(voice.MAX_RECORD_SECONDS * 12.5 + 5))
+        self.assertEqual(self.events, ["wake", ("text", "what time is it")])
+
+    def test_wake_phrase_is_stripped_and_empty_text_is_nothing(self):
+        listener = self.make(transcript="Hey Jarvis, what time is it?")
+        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 5, *[SILENT] * 12)
+        self.assertEqual(self.events[-1], ("text", "what time is it?"))
+        listener = self.make(transcript="  ")
+        self.feed(listener, *[SILENT] * 4, *[SPEECH] * 5, *[SILENT] * 12)
+        self.assertEqual(self.events[-1], "nothing")
+
+    def test_mute_closes_the_microphone(self):
+        opened = []
+
+        class FakeStream:
+            def __init__(self, **kwargs):
+                opened.append(self)
+                self.active = False
+
+            def start(self):
+                self.active = True
+
+            def close(self):
+                self.active = False
+
+        listener = self.make()
+        listener._stream_factory = FakeStream
+        listener.start()
+        self.assertTrue(opened[-1].active)
+        listener.set_muted(True)
+        self.assertFalse(opened[-1].active)
+        listener.set_muted(False)
+        self.assertEqual(len(opened), 2)
+        self.assertTrue(opened[-1].active)
+        listener.stop()
+
+
+@unittest.skipUnless(voice.listening_models_present() and voice.voice_models_present(),
+                     "voice models not downloaded")
+class RealListeningTest(unittest.TestCase):
+    def test_spoken_wake_word_and_question_become_text(self):
+        from scipy.signal import resample_poly
+        from kokoro_onnx import Kokoro
+        audio, rate = Kokoro(voice.KOKORO_MODEL, voice.KOKORO_VOICES).create(
+            "Hey Jarvis, what time is it right now?", voice=voice.VOICE)
+        pcm = (resample_poly(audio, 2, 3) * 32767).astype(np.int16)  # 24 kHz -> 16 kHz, like the mic
+        pcm = np.concatenate([np.zeros(16000, np.int16), pcm, np.zeros(32000, np.int16)])
+        events = []
+        listener = voice.Listener(on_wake=lambda: events.append("wake"),
+                                  on_text=lambda t: events.append(t),
+                                  on_nothing=lambda: events.append("nothing"),
+                                  background=lambda work: work())
+        for i in range(0, len(pcm) - voice.FRAME + 1, voice.FRAME):
+            listener.process(pcm[i:i + voice.FRAME])
+        self.assertEqual(events[0], "wake")
+        self.assertIn("time", events[-1].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

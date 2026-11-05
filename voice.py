@@ -14,6 +14,8 @@ import queue
 import re
 import threading
 
+import numpy as np
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(_HERE, "models")
 KOKORO_MODEL = os.path.join(MODELS, "kokoro", "kokoro-v1.0.int8.onnx")
@@ -208,5 +210,175 @@ class Speaker:
         sounddevice.stop()
 
 
+def chime():
+    """A soft two-note tone: Hestia heard the wake word and is listening."""
+    import sounddevice
+    rate = 24_000
+    notes = []
+    for pitch in (660, 880):
+        moment = np.arange(int(rate * 0.09)) / rate
+        notes.append(0.15 * np.sin(2 * np.pi * pitch * moment) * np.hanning(moment.size))
+    sounddevice.play(np.concatenate(notes).astype(np.float32), rate)
+
+
 def voice_models_present():
     return os.path.exists(KOKORO_MODEL) and os.path.exists(KOKORO_VOICES)
+
+
+# ---------------------------------------------------------------- listening
+WAKE_DIR = os.path.join(MODELS, "wakeword")
+WAKE_MODEL = os.path.join(WAKE_DIR, "hey_jarvis_v0.1.onnx")  # swap for a custom "hey hestia" model
+WAKE_PHRASE = "Hey Jarvis"
+WHISPER_DIR = os.path.join(MODELS, "whisper")
+WHISPER_MODEL = "base.en"
+
+RATE = 16_000
+FRAME = 1280                  # 80 ms: what openWakeWord expects per prediction
+WAKE_THRESHOLD = 0.5
+SPEECH_THRESHOLD = 0.5
+END_SILENCE_SECONDS = 0.8     # this long quiet after speaking ends the request
+WAIT_FOR_SPEECH_SECONDS = 5   # said the wake word, then nothing: give up
+MAX_RECORD_SECONDS = 15
+_FRAMES_PER_SECOND = RATE / FRAME
+_WAKE_ECHO = re.compile(r"^\W*(hey\W+)?(jarvis|jarvis's)\W*", re.IGNORECASE)
+
+
+def listening_models_present():
+    return os.path.exists(WAKE_MODEL) and os.path.isdir(WHISPER_DIR)
+
+
+class Listener:
+    """
+    Listens for the wake word, then records until you stop talking, then
+    turns that into text. Fed 80 ms frames of 16 kHz audio — by the
+    microphone normally, by tests directly. Muting closes the microphone
+    stream itself; nothing is ever written to disk or sent anywhere.
+
+    Callbacks run on the listener's threads, not the GUI's:
+        on_wake()        the wake word was heard; recording has started
+        on_text(text)    what was said after it
+        on_nothing()     the wake word, then nothing usable
+    """
+
+    def __init__(self, on_wake, on_text, on_nothing,
+                 wake_model=None, vad=None, transcribe=None, background=None):
+        self.on_wake, self.on_text, self.on_nothing = on_wake, on_text, on_nothing
+        self._wake = wake_model
+        self._vad = vad
+        self._transcribe = transcribe or self._whisper
+        self._background = background or (lambda work: threading.Thread(target=work, daemon=True).start())
+        self._whisper_model = None
+        self._stream_factory = None  # sounddevice.InputStream unless a test sets one
+        self._stream = None
+        self._frames = queue.Queue()
+        self._worker = None
+        self.muted = False
+        self._reset()
+
+    def _models(self):
+        if self._wake is None:
+            from openwakeword.model import Model
+            self._wake = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx",
+                               melspec_model_path=os.path.join(WAKE_DIR, "melspectrogram.onnx"),
+                               embedding_model_path=os.path.join(WAKE_DIR, "embedding_model.onnx"))
+        if self._vad is None:
+            from openwakeword.vad import VAD
+            self._vad = VAD(model_path=os.path.join(WAKE_DIR, "silero_vad.onnx"))
+
+    def _reset(self):
+        self.recording = False
+        self._audio = []
+        self._heard_speech = False
+        self._quiet_frames = 0
+
+    # --- one frame at a time -----------------------------------------------
+    def process(self, frame):
+        self._models()
+        if not self.recording:
+            scores = self._wake.predict(frame)
+            if max(scores.values(), default=0) >= WAKE_THRESHOLD:
+                self._wake.reset()
+                self.recording = True
+                self.on_wake()
+            return
+
+        self._audio.append(frame)
+        if self._vad.predict(frame, frame_size=640) >= SPEECH_THRESHOLD:
+            self._heard_speech, self._quiet_frames = True, 0
+        else:
+            self._quiet_frames += 1
+
+        seconds = len(self._audio) / _FRAMES_PER_SECOND
+        if not self._heard_speech and seconds >= WAIT_FOR_SPEECH_SECONDS:
+            self._reset()
+            self.on_nothing()
+        elif (self._heard_speech and self._quiet_frames / _FRAMES_PER_SECOND >= END_SILENCE_SECONDS) \
+                or seconds >= MAX_RECORD_SECONDS:
+            audio = np.concatenate(self._audio).astype(np.float32) / 32768.0
+            self._reset()
+            self._background(lambda: self._finish(audio))
+
+    def _finish(self, audio):
+        text = _WAKE_ECHO.sub("", (self._transcribe(audio) or "").strip()).strip()
+        if len(text) < 2:
+            self.on_nothing()
+        else:
+            self.on_text(text)
+
+    def _whisper(self, audio):
+        if self._whisper_model is None:
+            from faster_whisper import WhisperModel
+            self._whisper_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8",
+                                               download_root=WHISPER_DIR)
+        segments, _ = self._whisper_model.transcribe(audio, language="en", beam_size=1, vad_filter=True)
+        return " ".join(segment.text.strip() for segment in segments)
+
+    # --- the microphone ------------------------------------------------------
+    def start(self):
+        """Open the microphone (unless muted) and start listening."""
+        self._models()
+        if self._worker is None:
+            self._worker = threading.Thread(target=self._consume, daemon=True, name="hestia-listen")
+            self._worker.start()
+        if not self.muted:
+            self._open()
+
+    def _open(self):
+        if self._stream is not None:
+            return
+        factory = self._stream_factory
+        if factory is None:
+            import sounddevice
+            factory = sounddevice.InputStream
+        self._stream = factory(samplerate=RATE, channels=1, dtype="int16", blocksize=FRAME,
+                               callback=self._on_audio)
+        self._stream.start()
+
+    def _close(self):
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+        self._reset()
+
+    def _on_audio(self, data, frames, time_info, status):
+        self._frames.put(data[:, 0].copy())  # the audio callback must return fast
+
+    def _consume(self):
+        while True:
+            frame = self._frames.get()
+            if frame is None:
+                return
+            if self._stream is not None:
+                self.process(frame)
+
+    def set_muted(self, muted):
+        """Muted means the microphone stream is closed, not merely ignored."""
+        self.muted = muted
+        if muted:
+            self._close()
+        else:
+            self._open()
+
+    def stop(self):
+        self._close()
+        self._frames.put(None)
