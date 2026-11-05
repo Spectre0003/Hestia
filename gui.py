@@ -15,19 +15,33 @@ dialog is open, the answer is Deny, never a hang and never an approval.
     venv\\Scripts\\pythonw gui.py
 """
 
+import getpass
 import json
+import os
 import sys
 import threading
 import unicodedata
 
 from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QDesktopServices, QTextDocument
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QTextDocument
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
+    QMenu, QPlainTextEdit, QPushButton, QSystemTrayIcon, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import engine
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+# One Hestia per Windows user: a second launch finds the first through this
+# local socket name, asks it to show its window, and exits.
+INSTANCE_NAME = f"hestia-{getpass.getuser()}"
+
+# "Start with Windows" is a shortcut in the user's own Startup folder —
+# per-user, no admin, and visible/removable in File Explorer.
+STARTUP_SHORTCUT = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows",
+                                "Start Menu", "Programs", "Startup", "Hestia.lnk")
 
 IDLE_CHECK_MS = 60_000
 RENDER_EVERY_MS = 50  # streaming re-renders are batched, not one per token
@@ -190,6 +204,7 @@ class ChatWindow(QMainWindow):
     _submit = Signal(str)
     _check_idle = Signal()
     _stop_engine = Signal()
+    hidden_to_tray = Signal()
 
     def __init__(self, session_factory=engine.Session):
         super().__init__()
@@ -371,6 +386,11 @@ class ChatWindow(QMainWindow):
         self.activateWindow()
 
     # ---- quitting -------------------------------------------------------
+    def quit(self):
+        """Really quit: end the session, stop the engine, close the app."""
+        self.shutdown()
+        QApplication.instance().quit()
+
     def shutdown(self):
         """Close the session (indexing it) and stop the worker; a pending approval is denied."""
         if not self.thread.isRunning():
@@ -381,15 +401,125 @@ class ChatWindow(QMainWindow):
         self.thread.wait(30_000)
 
     def closeEvent(self, event):
-        self.shutdown()
-        super().closeEvent(event)
+        """Closing the window hides it: Hestia keeps running in the tray until Quit."""
+        if self.thread.isRunning():
+            event.ignore()
+            self.hide()
+            self.hidden_to_tray.emit()
+        else:
+            super().closeEvent(event)
+
+
+def hand_off(name=None):
+    """If a Hestia is already running, ask it to show itself and return True."""
+    name = name or INSTANCE_NAME  # read at call time, not frozen at import
+    socket = QLocalSocket()
+    socket.connectToServer(name)
+    if not socket.waitForConnected(500):
+        return False
+    socket.write(b"show")
+    socket.waitForBytesWritten(1000)
+    socket.disconnectFromServer()
+    return True
+
+
+class InstanceServer(QLocalServer):
+    """Listens for later launches and shows the window when one arrives."""
+
+    def __init__(self, name, show):
+        super().__init__()
+        self._show = show
+        QLocalServer.removeServer(name)  # a stale name left by a crash
+        self.newConnection.connect(self._on_connection)
+        self.listen(name)
+
+    def _on_connection(self):
+        while self.hasPendingConnections():
+            self.nextPendingConnection().close()
+            self._show()
+
+
+def starts_with_windows():
+    return os.path.exists(STARTUP_SHORTCUT)
+
+
+def set_start_with_windows(enabled):
+    """Add or remove the Startup-folder shortcut that runs Hestia, windowless, at login."""
+    if not enabled:
+        if os.path.exists(STARTUP_SHORTCUT):
+            os.remove(STARTUP_SHORTCUT)
+        return
+    import win32com.client
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(STARTUP_SHORTCUT)
+    link.TargetPath = pythonw if os.path.exists(pythonw) else sys.executable
+    link.Arguments = f'"{os.path.join(_HERE, "gui.py")}" --background'
+    link.WorkingDirectory = _HERE
+    link.Description = "Hestia, your local assistant"
+    link.Save()
+
+
+def hestia_icon():
+    """A warm circle with an H, drawn here so there's no image file to ship."""
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor("#e07a3f"))
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(2, 2, 60, 60)
+    painter.setPen(QColor("white"))
+    painter.setFont(QFont("Segoe UI", 30, QFont.Bold))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "H")
+    painter.end()
+    return QIcon(pixmap)
+
+
+class Tray(QSystemTrayIcon):
+    """The always-there part: open, start with Windows, quit."""
+
+    def __init__(self, window):
+        super().__init__(hestia_icon(), window)
+        self.window = window
+        self.setToolTip("Hestia")
+        menu = QMenu()
+        menu.addAction("Open Hestia", window.show_window)
+        self.start_with_windows = menu.addAction("Start with Windows")
+        self.start_with_windows.setCheckable(True)
+        self.start_with_windows.setChecked(starts_with_windows())
+        self.start_with_windows.toggled.connect(set_start_with_windows)
+        self.menu_quit_separator = menu.addSeparator()
+        menu.addAction("Quit Hestia", window.quit)
+        self.setContextMenu(menu)
+        self.menu = menu
+        self.activated.connect(self._on_activated)
+        window.hidden_to_tray.connect(self._first_hide)
+        self._told = False
+
+    def _on_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.window.show_window()
+
+    def _first_hide(self):
+        if not self._told:
+            self._told = True
+            self.showMessage("Hestia is still here", "She keeps running in the tray. "
+                             "Right-click the icon to quit.", hestia_icon(), 4000)
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Hestia")
+    app.setQuitOnLastWindowClosed(False)  # closing the window hides it to the tray
+    if hand_off():
+        return
+    app.setWindowIcon(hestia_icon())
     window = ChatWindow()
-    window.show()
+    server = InstanceServer(INSTANCE_NAME, window.show_window)  # noqa: F841 (kept alive for the app's life)
+    tray = Tray(window)
+    tray.show()
+    if "--background" not in sys.argv:  # started at login: just the tray icon
+        window.show()
     sys.exit(app.exec())
 
 

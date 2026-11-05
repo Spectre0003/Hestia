@@ -151,5 +151,67 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(opened, ["https://en.wikipedia.org/wiki/Hestia"])
 
 
+class BackgroundTest(unittest.TestCase):
+    def setUp(self):
+        self.window = gui.ChatWindow(session_factory=FakeSession)
+        self.addCleanup(self.window.shutdown)
+        self.assertTrue(wait_until(lambda: self.window.ready))
+
+    def test_closing_the_window_hides_it_but_hestia_keeps_running(self):
+        self.window.show()
+        self.window.close()
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window.thread.isRunning())
+
+    def test_quit_stops_the_engine(self):
+        self.window.quit()
+        self.assertFalse(self.window.thread.isRunning())
+        self.assertTrue(self.window.worker.session.closed)
+
+    def test_second_instance_hands_off(self):
+        name = f"hestia-test-{os.getpid()}-{time.monotonic_ns()}"
+        self.assertFalse(gui.hand_off(name), "nothing is running under this name yet")
+        shown = []
+        server = gui.InstanceServer(name, lambda: shown.append(True))
+        self.addCleanup(server.close)
+        result = []
+        threading.Thread(target=lambda: result.append(gui.hand_off(name))).start()
+        self.assertTrue(wait_until(lambda: shown and result))
+        self.assertEqual(result, [True])
+
+
+    def test_hand_off_uses_the_current_instance_name(self):
+        # A default argument would freeze the name at import; caught live when
+        # a second instance looked under the old name and started anyway.
+        name = f"hestia-test-default-{os.getpid()}-{time.monotonic_ns()}"
+        self.addCleanup(setattr, gui, "INSTANCE_NAME", gui.INSTANCE_NAME)
+        gui.INSTANCE_NAME = name
+        shown = []
+        server = gui.InstanceServer(name, lambda: shown.append(True))
+        self.addCleanup(server.close)
+        result = []
+        threading.Thread(target=lambda: result.append(gui.hand_off())).start()
+        self.assertTrue(wait_until(lambda: shown and result))
+        self.assertEqual(result, [True])
+
+
+class StartWithWindowsTest(unittest.TestCase):
+    def setUp(self):
+        folder = support.temp_folder(self)
+        self.addCleanup(setattr, gui, "STARTUP_SHORTCUT", gui.STARTUP_SHORTCUT)
+        gui.STARTUP_SHORTCUT = os.path.join(folder, "Hestia.lnk")
+
+    def test_turning_it_on_and_off(self):
+        self.assertFalse(gui.starts_with_windows())
+        gui.set_start_with_windows(True)
+        self.assertTrue(gui.starts_with_windows())
+        import win32com.client
+        link = win32com.client.Dispatch("WScript.Shell").CreateShortcut(gui.STARTUP_SHORTCUT)
+        self.assertTrue(link.TargetPath.lower().endswith("pythonw.exe"))
+        self.assertIn("gui.py", link.Arguments)
+        gui.set_start_with_windows(False)
+        self.assertFalse(gui.starts_with_windows())
+
+
 if __name__ == "__main__":
     unittest.main()
