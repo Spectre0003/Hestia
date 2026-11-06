@@ -1,5 +1,5 @@
 """
-Hestia — window front end (Stage 10 / v1.0)
+Hestia — window front end (Stage 10 / v1.0, standby and conversations in v1.1)
 
 The desktop way to talk to Hestia: a chat window (PySide6 / Qt). The
 engine (engine.py) runs on its own worker thread, which owns the Session,
@@ -23,6 +23,7 @@ import random
 import re
 import sys
 import threading
+import time
 import unicodedata
 
 from PySide6.QtCore import QEasingCurve, QObject, QPointF, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
@@ -68,6 +69,10 @@ FAREWELLS = ("Okay.", "Alright, I'll be here.", "Sure. Talk later.", "Okay — I
 STOP_WORDS = {"stop", "cancel", "never mind", "nevermind", "be quiet", "quiet", "shush", "that's enough"}
 
 IDLE_CHECK_MS = 60_000
+# Standby: this long with nothing said or spoken, and she lets go of the chat
+# model, the tool servers and the voice models until "Rise Hestia".
+REST_AFTER_SECONDS = 120
+REST_CHECK_MS = 15_000
 RENDER_EVERY_MS = 50  # streaming re-renders are batched, not one per token
 
 FONT = "Yu Gothic UI"          # clean, and from the same Japanese design family as the logo
@@ -170,6 +175,23 @@ class ApprovalDialog(QDialog):
         buttons.addWidget(self.allow_button)
         layout.addLayout(buttons)
         self.deny_button.setFocus()
+
+
+def _trim_memory():
+    """
+    Standby: give Windows back the memory Hestia just let go of. Without
+    this she sat at ~950 MB after a conversation (NVIDIA's libraries stay
+    loaded); Windows pages back in only what the wake listener then uses.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32, psapi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("psapi")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.EmptyWorkingSet.argtypes = [wintypes.HANDLE]
+        psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
+    except (OSError, AttributeError):
+        pass  # not Windows: nothing to do
 
 
 class Bridge(QObject):
@@ -311,6 +333,18 @@ class Worker(QObject):
             self.bridge.notice(f"[Something went wrong: {e}]")
             output, was_command = "", True
         self.done.emit(output, was_command)
+
+    @Slot()
+    def wake(self):
+        if self.session:
+            for problem in self.session.wake():
+                self.bridge.notice(f"[Tool server problem — {problem}. Its tools are unavailable this run.]")
+
+    @Slot()
+    def rest(self):
+        if self.session:
+            self.session.rest()
+        _trim_memory()
 
     @Slot()
     def check_idle(self):
@@ -467,6 +501,8 @@ class ChatWindow(QMainWindow):
     _submit = Signal(str)
     _check_idle = Signal()
     _stop_engine = Signal()
+    _wake_engine = Signal()
+    _rest_engine = Signal()
     hidden_to_tray = Signal()
     state_changed = Signal(str)    # a colour, for the tray icon
     mute_requested = Signal()      # "Mute Hestia" was said
@@ -574,6 +610,8 @@ class ChatWindow(QMainWindow):
         self._submit.connect(self.worker.handle)
         self._check_idle.connect(self.worker.check_idle)
         self._stop_engine.connect(self.worker.close)
+        self._wake_engine.connect(self.worker.wake)
+        self._rest_engine.connect(self.worker.rest)
         self.worker.ready.connect(self._on_ready)
         self.worker.failed.connect(self._on_failed)
         self.worker.done.connect(self._on_done)
@@ -584,6 +622,12 @@ class ChatWindow(QMainWindow):
         self._state_timer = QTimer(self, interval=200)
         self._state_timer.timeout.connect(self._refresh_state)
         self._state_timer.start()
+
+        self.loaded = False                      # everything loaded, or in standby
+        self._last_activity = time.monotonic()
+        self._rest_timer = QTimer(self, interval=REST_CHECK_MS)
+        self._rest_timer.timeout.connect(self._maybe_rest)
+        self._rest_timer.start()
 
         self._idle_timer = QTimer(self, interval=IDLE_CHECK_MS)
         self._idle_timer.timeout.connect(self._check_idle.emit)
@@ -596,6 +640,7 @@ class ChatWindow(QMainWindow):
         if not text or not self.ready or self.busy:
             return
         self._hush()  # a new message cuts off whatever she was saying
+        self.wake_up()
         self.speaking_turn = bool(self.speaker) and (spoken or self.speak_all.isChecked())
         self._spoken_text, self._held_back, self._rest = "", None, None
         self.input.clear()
@@ -622,6 +667,7 @@ class ChatWindow(QMainWindow):
         self._hush()
         if self.chime:
             self.chime()
+        self.wake_up()  # loads while you say what you want
         self.in_conversation = True
         self.statusBar().showMessage("Talk away — say “Fall Hestia” to end the conversation.", 6000)
         self._refresh_state()
@@ -668,6 +714,36 @@ class ChatWindow(QMainWindow):
         else:
             return False  # a new question: the rest is dropped
         return True
+
+    # ---- standby ---------------------------------------------------------
+    def wake_up(self):
+        """Load what a conversation needs, each part in the background, at once."""
+        self._last_activity = time.monotonic()
+        if self.loaded:
+            return
+        self.loaded = True
+        self._wake_engine.emit()       # tool servers, and the chat model onto the GPU
+        if self.speaker:
+            self.speaker.warm_up()     # Kokoro
+        if self.listener:
+            self.listener.warm_up()    # Whisper small.en onto the GPU
+
+    def _maybe_rest(self):
+        quiet = time.monotonic() - self._last_activity >= REST_AFTER_SECONDS
+        talking = self.busy or (self.speaker and self.speaker.speaking)
+        if talking:
+            self._last_activity = time.monotonic()
+        elif self.loaded and self.ready and quiet:
+            self.rest()
+
+    def rest(self):
+        """Standby: only the light wake-phrase listener stays loaded."""
+        self.loaded = False
+        self._rest_engine.emit()
+        if self.speaker:
+            self.speaker.rest()
+        if self.listener:
+            self.listener.rest()
 
     def _idle_state(self):
         if self.listener and self.listener.muted:
@@ -828,6 +904,7 @@ class ChatWindow(QMainWindow):
         if not self.thread.isRunning():
             return
         self._idle_timer.stop()
+        self._rest_timer.stop()
         if self.listener:
             self.listener.stop()
         if self.speaker:

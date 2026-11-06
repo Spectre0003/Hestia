@@ -327,18 +327,20 @@ def start_docker() -> str:
     """Start Docker Desktop, and Hestia's web search container with it. Use this when the user asks to start or turn on Docker. It takes about a minute; this returns straight away."""
     if subprocess.run(["docker", "info"], capture_output=True, timeout=DOCKER_TIMEOUT_SECONDS,
                       creationflags=subprocess.CREATE_NO_WINDOW).returncode == 0:
-        threading.Thread(target=launcher.start_search, daemon=True).start()  # just the container
+        threading.Thread(target=launcher.start_search, kwargs={"ours": False}, daemon=True).start()
         return "Docker Desktop is already running."
     if not os.path.exists(launcher.DOCKER_DESKTOP):
         raise ToolError("Docker Desktop isn't installed.")
     # Launched outside this server's job (launcher), so it keeps running after Hestia quits.
-    threading.Thread(target=launcher.start_search, daemon=True).start()
+    threading.Thread(target=launcher.start_search, kwargs={"ours": False}, daemon=True).start()
     return "Starting Docker Desktop — it takes about a minute. Web search comes back on with it."
 
 
 @server.tool()
 def stop_docker() -> str:
     """Stop Docker Desktop, and with it every running container — Hestia's web search included. Use this when the user asks to stop, quit or turn off Docker. The user approves it before it happens."""
+    if os.path.exists(launcher.STARTED_BY_HESTIA):
+        os.remove(launcher.STARTED_BY_HESTIA)
     code, out, err = _docker("desktop", "stop", "--detach")
     if code != 0:
         raise ToolError(err or out or "Docker Desktop didn't stop.")

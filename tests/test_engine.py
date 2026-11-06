@@ -167,6 +167,36 @@ class StartupTest(unittest.TestCase):
             engine.load_personality("no-such-personality.yaml")
 
 
+class StandbyTest(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.session, _ = new_session(self, RecordingUI())
+        for module, name, value in (
+                (tools, "start", lambda: self.calls.append("tools up") or []),
+                (tools, "stop", lambda: self.calls.append("tools down")),
+                (engine, "_load_model", lambda keep_alive: self.calls.append(f"model {keep_alive}"))):
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, value)
+
+    def test_nothing_heavy_is_loaded_until_she_wakes(self):
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.session.awake)
+
+    def test_wake_then_rest(self):
+        self.session.wake()
+        self.session.wake()  # once is enough
+        self.assertTrue(self.session.awake)
+        self.assertEqual(sorted(self.calls), ["model 30m", "tools up"])
+        self.session.rest()
+        self.assertFalse(self.session.awake)
+        self.assertEqual(self.calls[-2:], ["tools down", "model 0"])
+
+    def test_a_turn_wakes_her(self):
+        model(self)
+        self.session.handle("hello there")
+        self.assertTrue(self.session.awake)
+
+
 class StartServicesTest(unittest.TestCase):
     def patch(self, name, value, module=engine):
         self.addCleanup(setattr, module, name, getattr(module, name))

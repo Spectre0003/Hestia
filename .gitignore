@@ -24,6 +24,7 @@ repos.yaml
 
 # The shortcut icon, drawn from gui.py's hestia_icon() when a shortcut is made.
 data/hestia.ico
+data/docker-started-by-hestia
 
 # Downloaded voice models (from Stage 10): scripts/download_models.py fetches them.
 models/

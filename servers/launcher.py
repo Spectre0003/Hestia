@@ -47,19 +47,37 @@ def _docker(*args, timeout=30):
         return False
 
 
-def start_search(wait_seconds=180):
+# Present while Docker Desktop is running because Hestia started it for a
+# search: only then does she stop it again when she goes idle.
+STARTED_BY_HESTIA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "data", "docker-started-by-hestia")
+
+
+def start_search(wait_seconds=180, ours=True):
     """
     Get web search running: Docker Desktop if it isn't (it takes about a
     minute), then the SearXNG container. Blocks, so run it on a thread.
-    True if the container was started.
+    True if the container was started. ours=False when the user asked for
+    Docker: then it's theirs, and Hestia never stops it on her own.
     """
     if not _docker("info"):
         if not os.path.exists(DOCKER_DESKTOP):
             return False
         launch([DOCKER_DESKTOP])
+        if ours:
+            os.makedirs(os.path.dirname(STARTED_BY_HESTIA), exist_ok=True)
+            open(STARTED_BY_HESTIA, "w").close()
         end = time.monotonic() + wait_seconds
         while not _docker("info", timeout=10):
             if time.monotonic() > end:
                 return False
             time.sleep(3)
     return _docker("start", SEARCH_CONTAINER, timeout=60)
+
+
+def stop_search_if_ours():
+    """Stop Docker Desktop if Hestia started it for a search. True if she did."""
+    if not os.path.exists(STARTED_BY_HESTIA):
+        return False
+    os.remove(STARTED_BY_HESTIA)
+    return _docker("desktop", "stop", "--detach", timeout=60)

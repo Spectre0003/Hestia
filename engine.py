@@ -1,5 +1,5 @@
 """
-Hestia — engine (Stage 10 / v1.0)
+Hestia — engine (Stage 10 / v1.0, standby and conversations in v1.1)
 
 Everything that makes Hestia Hestia, with no terminal in it: the
 persona, the model, turns and tool calls, commands, memory, history,
@@ -28,7 +28,7 @@ import urllib.request
 from datetime import datetime, timedelta
 
 import yaml
-from ollama import chat, create
+from ollama import chat, create, generate
 
 import embeddings
 import memory
@@ -52,6 +52,9 @@ PERSONALITY_PATH = os.path.join(_HERE, "personality.yaml")
 # An always-on Hestia never exits, so "the end of a session" — when it's
 # indexed for recall — becomes this long without a message.
 IDLE_MINUTES = 20
+# While she's awake the chat model stays on the GPU between turns; rest()
+# unloads it at once. (Ollama's own default would drop it after 5 minutes.)
+KEEP_ALIVE = "30m"
 
 
 class StartupError(Exception):
@@ -149,7 +152,7 @@ def stream_reply(messages, ui, offer_tools=True):
     text = ""
     tool_calls = []
     schemas = tools.tool_schemas() if offer_tools else []
-    stream = chat(model=MODEL_NAME, messages=messages, tools=schemas or None, stream=True)
+    stream = chat(model=MODEL_NAME, messages=messages, tools=schemas or None, stream=True, keep_alive=KEEP_ALIVE)
     for chunk in stream:
         token = chunk.message.content or ""
         if token:
@@ -227,14 +230,16 @@ def _ollama_up():
 def start_services(wait_seconds=30):
     """
     Started from the desktop or at login, nothing else may be running yet.
-    Starts Ollama (its own tray app, as its installer sets up) and waits for
-    it; starts Docker Desktop and the SearXNG container in the background,
-    so web search works without anyone starting them. Problems are left for
-    the model setup below to report.
+    Starts Ollama's server and waits for it; it idles at ~100 MB until a model
+    is loaded. Docker isn't started here: the first web search does that
+    (launcher.start_search).
+    Problems are left for the model setup below to report.
     """
     if not _ollama_up():
-        app = os.path.join(OLLAMA_DIR, "ollama app.exe")
-        command = [app] if os.path.exists(app) else [shutil.which("ollama") or "ollama", "serve"]
+        # Just the server (~100 MB): Ollama's own desktop app, which also starts
+        # one, took 1.2 GB of RAM on its own.
+        exe = os.path.join(OLLAMA_DIR, "ollama.exe")
+        command = [exe if os.path.exists(exe) else shutil.which("ollama") or "ollama", "serve"]
         try:
             subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
         except OSError:
@@ -242,9 +247,14 @@ def start_services(wait_seconds=30):
         end = time.monotonic() + wait_seconds
         while time.monotonic() < end and not _ollama_up():
             time.sleep(0.5)
-    # Web search: Docker Desktop (if it isn't running) and the SearXNG container,
-    # in the background — Docker takes about a minute and nothing waits for it.
-    threading.Thread(target=launcher.start_search, daemon=True).start()
+
+
+def _load_model(keep_alive):
+    """Load the chat model onto the GPU (keep_alive=KEEP_ALIVE) or unload it (0)."""
+    try:
+        generate(model=MODEL_NAME, prompt="", keep_alive=keep_alive)
+    except Exception:
+        pass  # a turn reports Ollama problems properly
 
 
 class Session:
@@ -252,6 +262,10 @@ class Session:
     One running Hestia: the model, the tool servers, the database, and
     the conversation in progress. Safe to use from a worker thread while
     a timer calls close_if_idle from another — one lock covers both.
+
+    Standby: starting a Session loads nothing heavy. wake() starts the tool
+    servers and loads the chat model; rest() stops them and unloads it. A
+    turn wakes her itself, so a front end that never calls either still works.
     """
 
     def __init__(self, ui, resume=False):
@@ -266,8 +280,8 @@ class Session:
                 f"Couldn't set up '{MODEL_NAME}' from '{BASE_MODEL}': {e}. Is Ollama running, "
                 f"and has '{BASE_MODEL}' been pulled ('ollama pull {BASE_MODEL}')?")
         self.conn = storage.get_connection()
-        # A tool server that won't start costs its tools, not the chat.
-        self.problems = tools.start()
+        self.problems = []
+        self.awake = False
         self._lock = threading.RLock()
         self._closed = False
 
@@ -314,6 +328,30 @@ class Session:
         self.session_id = storage.start_new_session(self.conn)
         self._start_history()
 
+    def wake(self):
+        """
+        Get ready to talk: the chat model loads (~5 s) while the tool servers
+        start. Returns any tool server problems. Does nothing if already awake.
+        """
+        with self._lock:
+            if self.awake or self._closed:
+                return []
+            loading = threading.Thread(target=_load_model, args=(KEEP_ALIVE,), daemon=True)
+            loading.start()
+            # A tool server that won't start costs its tools, not the chat.
+            self.problems = tools.start()
+            self.awake = True
+            return self.problems
+
+    def rest(self):
+        """Standby: stop the tool servers and unload the chat model, freeing the GPU."""
+        with self._lock:
+            if not self.awake:
+                return
+            tools.stop()
+            _load_model(0)
+            self.awake = False
+
     def close_if_idle(self, now=None):
         """
         End and index the session once nothing has been said for
@@ -325,6 +363,7 @@ class Session:
             if self._closed or not self.exchanges or now - self.last_activity < timedelta(minutes=IDLE_MINUTES):
                 return False
             self._new_session()
+            launcher.stop_search_if_ours()  # Docker, if it was only running for her searches
             return True
 
     def handle(self, text):
@@ -355,6 +394,7 @@ class Session:
             if memory.is_remember_command(text):
                 memory.store_explicit_memory(self.conn, MODEL_NAME, text)
                 return "[Got it, I'll remember that.]", True
+            self.wake()
             return self._turn(text), False
 
     def _turn(self, user_input):
@@ -422,3 +462,4 @@ class Session:
             self._end_session()
             self.conn.close()
             tools.stop()
+            self.awake = False

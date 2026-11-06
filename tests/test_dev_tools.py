@@ -294,14 +294,14 @@ class DockerDesktopTest(unittest.TestCase):
         import threading
         started = threading.Event()
         self.addCleanup(setattr, dev_tools.launcher, "start_search", dev_tools.launcher.start_search)
-        dev_tools.launcher.start_search = started.set
+        dev_tools.launcher.start_search = lambda **kw: started.set()
         with mock.patch.object(dev_tools.subprocess, "run", return_value=_completed(1)):
             self.assertIn("about a minute", dev_tools.start_docker())
         self.assertTrue(started.wait(5))
 
     def test_start_docker_when_its_already_running(self):
         self.addCleanup(setattr, dev_tools.launcher, "start_search", dev_tools.launcher.start_search)
-        dev_tools.launcher.start_search = lambda: None
+        dev_tools.launcher.start_search = lambda **kw: None
         with mock.patch.object(dev_tools.subprocess, "run", return_value=_completed(0)):
             self.assertIn("already running", dev_tools.start_docker())
 

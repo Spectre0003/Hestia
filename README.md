@@ -32,7 +32,7 @@ venv\Scripts\python scripts\download_models.py
 
 Then either:
 
-- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** to start a conversation: from then on just talk — she answers out loud and waits for you, no wake word needed — until **"Fall Hestia"** ends it. **"Mute Hestia"** closes the microphone until you unmute it from the tray. She can open any app in your Start menu. She can start and stop Docker for you ("start Docker", "turn off Docker"), and asks before reading out a long answer. Talking to her never brings up the window; approvals are always a click, never your voice.
+- `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** to start a conversation: from then on just talk — she answers out loud and waits for you, no wake word needed — until **"Fall Hestia"** ends it. **"Mute Hestia"** closes the microphone until you unmute it from the tray. She can open any app in your Start menu. She can start and stop Docker for you ("start Docker", "turn off Docker"), and asks before reading out a long answer. Talking to her never brings up the window; approvals are always a click, never your voice. While she's waiting she uses under 300 MB of RAM and none of the GPU: "Rise Hestia" loads everything (about 5 seconds), and two quiet minutes put her back on standby.
 - `venv\Scripts\python chat.py` — the same Hestia in a terminal.
 
 For a desktop icon, run `venv\Scripts\python gui.py --desktop-shortcut` once. Hestia starts Ollama herself if it isn't running, and her SearXNG search container if Docker is.
@@ -53,7 +53,8 @@ Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example`
 | 7 | v0.7 | Dev environment integration | Git, VS Code, Docker, WSL2, repo allowlist | ✅ Complete |
 | 8 | v0.8 | Internet tools | Self-hosted SearXNG, fetch_page, network tier, `.env`/secrets | ✅ Complete |
 | 9 | v0.9 | Advanced memory | nomic-embed-text via Ollama, vectors in SQLite, recall tool | ✅ Complete |
-| 10 | v1.0 | Actual assistant | Qt window + tray, wake phrase "Rise Hestia", faster-whisper, Kokoro, start with Windows | ✅ Complete |
+| 10 | v1.0 | Actual assistant | Qt window + tray, wake word (openWakeWord), faster-whisper, Kokoro, start with Windows | ✅ Complete |
+| 11 | v1.1 | Optimisation and polish | "Rise Hestia" conversations, Whisper on the GPU, standby (loads on wake), any app, Docker on demand, new look | ✅ Complete |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 

@@ -93,9 +93,9 @@ def main():
         sys.exit(1)
     ui.name = session.name
 
-    for problem in session.problems:
+    for problem in session.wake():  # a terminal is opened to talk: no standby
         print(f"[Tool server problem — {problem}. Its tools are unavailable this run.]")
-    print(f"{session.name} v1.0 — talking to {engine.MODEL_NAME}.")
+    print(f"{session.name} v1.1 — talking to {engine.MODEL_NAME}.")
     print("Commands: 'exit'/'quit' to leave, 'new' for a fresh session,")
     print("          'remember ...' to save a fact, 'forget ...' to remove one,")
     print("          'memories' to list what's stored, 'tools' for the tool-call log.\n")

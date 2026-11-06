@@ -266,11 +266,17 @@ def start():
     threading.Thread(target=_loop.run_forever, daemon=True).start()
     _stop = asyncio.Event()
 
-    problems = []
+    # All servers start at once (each is a Python process taking ~2 s to import
+    # its libraries); one after another, waking Hestia took 9.6 s.
+    starting = []
     for name, command in SERVERS.items():
         ready = concurrent.futures.Future()
         connection = asyncio.run_coroutine_threadsafe(_hold_connection(name, command, ready), _loop)
         _connections.append(connection)
+        starting.append((name, ready, connection))
+
+    problems = []
+    for name, ready, connection in starting:
         try:
             server_tools = ready.result(timeout=CONNECT_TIMEOUT_SECONDS)
         except concurrent.futures.TimeoutError:

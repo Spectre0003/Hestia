@@ -1,5 +1,5 @@
 """
-Hestia — voice (Stage 10 / v1.0)
+Hestia — voice (Stage 10 / v1.0, standby and conversations in v1.1)
 
 Speaking: replies are cleaned for speech (code, links and Markdown never
 read out), cut into sentences as they stream, and spoken by Kokoro —
@@ -9,6 +9,7 @@ between sentences. Everything runs on the CPU; the GPU is the chat
 model's. Nothing is recorded or saved, and nothing leaves the machine.
 """
 
+import gc
 import os
 import queue
 import re
@@ -111,6 +112,7 @@ class Speaker:
         self._play = play or self._play_default
         self._stop_audio = stop_audio or self._stop_default
         self._tts = None
+        self._tts_lock = threading.Lock()
         self._splitter = SentenceSplitter()
         self._generation = 0  # bumped by stop(): anything queued before it is dropped
         self._texts = queue.Queue()
@@ -170,14 +172,24 @@ class Speaker:
         self._audio.put(None)
 
     # --- the two threads -------------------------------------------------
+    def warm_up(self):
+        """Load Kokoro in the background: cold, her first word took ~5 s."""
+        if self._synthesize == self._kokoro and self._tts is None:
+            threading.Thread(target=self._try_load, daemon=True).start()
+
+    def _try_load(self):
+        try:
+            self._load_kokoro()
+        except Exception:
+            pass  # retried on first use; a broken voice must not break anything else
+
+    def rest(self):
+        """Let Kokoro go (standby). Loaded again by warm_up() or the next sentence."""
+        with self._tts_lock:
+            if not self.speaking:
+                self._tts = None
+
     def _synthesis_loop(self):
-        if self._synthesize == self._kokoro:
-            # Load Kokoro now, while Hestia starts up anyway: on first use it
-            # took ~5 s before her first word.
-            try:
-                self._load_kokoro()
-            except Exception:
-                pass  # retried on first use; a broken voice must not break startup
         while True:
             item = self._texts.get()
             if item is None:
@@ -211,14 +223,16 @@ class Speaker:
 
     # --- defaults: Kokoro and the sound card ---------------------------------
     def _load_kokoro(self):
-        if self._tts is None:
-            from kokoro_onnx import Kokoro
-            self._tts = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
-            self._tts.create("Ready.", voice=VOICE, lang="en-us")  # first call also sets up phonemes
+        with self._tts_lock:  # warm_up() and the first sentence can race
+            if self._tts is None:
+                from kokoro_onnx import Kokoro
+                tts = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
+                tts.create("Ready.", voice=VOICE, lang="en-us")  # first call also sets up phonemes
+                self._tts = tts
+            return self._tts
 
     def _kokoro(self, text):
-        self._load_kokoro()
-        return self._tts.create(text, voice=VOICE, speed=1.0, lang="en-us")
+        return self._load_kokoro().create(text, voice=VOICE, speed=1.0, lang="en-us")
 
     @staticmethod
     def _play_default(audio, rate):
@@ -306,8 +320,14 @@ def _cuda_libraries():
         os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
 
 
+def load_wake_whisper():
+    """base.en on the CPU: all that's needed to hear the three phrases (50/50 caught), and no GPU."""
+    from faster_whisper import WhisperModel
+    return WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", download_root=WHISPER_DIR)
+
+
 def load_whisper():
-    """small.en on the GPU if it works, else base.en on the CPU."""
+    """For conversations: small.en on the GPU if it works, else base.en on the CPU."""
     from faster_whisper import WhisperModel
     try:
         _cuda_libraries()
@@ -350,7 +370,8 @@ class Listener:
         self.awake = awake or (lambda: False)
         self._vad = vad
         self._transcribe = transcribe or self._whisper
-        self._whisper_model = None
+        self._wake_model = None     # base.en, CPU: always loaded
+        self._turn_model = None     # small.en, GPU: loaded on waking, let go on resting
         self._whisper_lock = threading.Lock()
         self._stream_factory = None  # sounddevice.InputStream unless a test sets one
         self._stream = None
@@ -406,10 +427,10 @@ class Listener:
             return
         request = split_wake(heard)
         if request is not None:
+            self.on_wake()  # first, so everything starts loading while this is transcribed
             if not awake and len(audio) > WAKE_CHECK_SECONDS * RATE:
                 # Longer than the check: transcribe it all to get the whole request.
                 request = split_wake(self._transcribe(audio, prompt=TURN_PROMPT)) or request
-            self.on_wake()
         elif awake:
             request = heard.strip()
         else:
@@ -417,19 +438,37 @@ class Listener:
         if len(request) >= 2:
             self.on_text(request)
 
-    def _load_whisper(self):
-        with self._whisper_lock:  # loaded ahead at start(), and maybe by a frame at the same time
-            if self._whisper_model is None:
-                self._whisper_model = load_whisper()
-        return self._whisper_model
+    def _load_wake(self):
+        with self._whisper_lock:
+            if self._wake_model is None:
+                self._wake_model = load_wake_whisper()
+        return self._wake_model
+
+    def _load_turn(self):
+        with self._whisper_lock:  # warm_up() and a turn can race
+            if self._turn_model is None:
+                self._turn_model = load_whisper()
+        return self._turn_model
+
+    def warm_up(self):
+        """She's been woken: load the conversation model in the background (~2 s on the GPU)."""
+        if self._transcribe == self._whisper and self._turn_model is None:
+            threading.Thread(target=self._load_turn, daemon=True).start()
+
+    def rest(self):
+        """Standby: let the conversation model go, freeing its GPU memory."""
+        with self._whisper_lock:
+            self._turn_model = None
+        gc.collect()
 
     def _whisper(self, audio, prompt=None):
-        self._load_whisper()
+        # What you say to her goes to the better model; listening for the phrases, the light one.
+        model = self._load_turn() if prompt == TURN_PROMPT else self._load_wake()
         # Cut off speech can send Whisper round in circles ("the heart of the heart
         # of..."), which took up to 6.6 s: cap the words at twice a fast talker's
         # rate, and skip the slow retries.
         limit = int(len(audio) / RATE * 8) + 8
-        segments, _ = self._whisper_model.transcribe(
+        segments, _ = model.transcribe(
             audio, language="en", beam_size=1, vad_filter=True, initial_prompt=prompt,
             max_new_tokens=limit, temperature=0.0)
         return " ".join(segment.text.strip() for segment in segments)
@@ -439,8 +478,7 @@ class Listener:
         """Open the microphone (unless muted) and start listening."""
         self._models()
         if self._transcribe == self._whisper:
-            # Load now, not on the first "Rise Hestia" (2.5 s on the GPU).
-            threading.Thread(target=self._load_whisper, daemon=True).start()
+            threading.Thread(target=self._load_wake, daemon=True).start()
         if self._worker is None:
             self._worker = threading.Thread(target=self._consume, daemon=True, name="hestia-listen")
             self._worker.start()

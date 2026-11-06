@@ -54,6 +54,13 @@ class FakeSession:
     def close_if_idle(self, now=None):
         return False
 
+    def wake(self):
+        self.woken = getattr(self, "woken", 0) + 1
+        return []
+
+    def rest(self):
+        self.rested = getattr(self, "rested", 0) + 1
+
     def close(self):
         self.closed = True
 
@@ -245,6 +252,12 @@ class RecordingSpeaker:
     def close(self):
         pass
 
+    def warm_up(self):
+        self.warmed = getattr(self, "warmed", 0) + 1
+
+    def rest(self):
+        self.rested = getattr(self, "rested", 0) + 1
+
 
 class SpeakingTest(unittest.TestCase):
     def setUp(self):
@@ -396,6 +409,35 @@ class ListeningTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: not self.window.busy))
         self.assertEqual(self.speaker.said, [])
         self.assertIsNone(self.window._rest)
+
+    def test_rise_hestia_wakes_everything_and_quiet_puts_it_back_to_rest(self):
+        self.assertFalse(self.window.loaded)
+        self.window.heard_wake()
+        self.assertTrue(self.window.loaded)
+        self.assertEqual(self.speaker.warmed, 1)
+        session = self.window.worker.session
+        self.assertTrue(wait_until(lambda: getattr(session, "woken", 0) == 1))
+        self.window._maybe_rest()                       # not quiet long enough yet
+        self.assertTrue(self.window.loaded)
+        self.window._last_activity -= gui.REST_AFTER_SECONDS
+        self.window._maybe_rest()
+        self.assertFalse(self.window.loaded)
+        self.assertEqual(self.speaker.rested, 1)
+        self.assertTrue(wait_until(lambda: getattr(session, "rested", 0) == 1))
+        self.window.heard_wake()                        # and wakes again
+        self.assertEqual(self.speaker.warmed, 2)
+
+    def test_she_doesnt_rest_while_talking(self):
+        self.window.heard_wake()
+        self.window._last_activity -= gui.REST_AFTER_SECONDS
+        self.speaker.speaking = True
+        self.window._maybe_rest()
+        self.assertTrue(self.window.loaded)
+        self.speaker.speaking = False
+
+    def test_a_typed_message_wakes_her_too(self):
+        self.window.send("hi")
+        self.assertTrue(self.window.loaded)
 
     def test_stop_words_just_hush_her(self):
         for words in ("stop", "Never mind.", "be quiet"):
