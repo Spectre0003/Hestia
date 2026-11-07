@@ -254,6 +254,9 @@ class Ears(QObject):
     wake = Signal()
     text = Signal(str)
     command = Signal(str)
+    # Why she can't hear or speak right now: a model downloading, the GPU
+    # falling back to the CPU, a failure. Shown as a notice in the transcript.
+    status = Signal(str)
 
 
 class Orb(QWidget):
@@ -1076,17 +1079,19 @@ def main():
         return
     app.setWindowIcon(hestia_icon())
     settings = QSettings("Hestia", "Hestia")
-    speaker = voice.Speaker() if voice.voice_models_present() else None
     ears = Ears()
+    speaker = voice.Speaker(on_status=ears.status.emit) if voice.voice_models_present() else None
     listener = None
     if voice.listening_models_present():
         listener = voice.Listener(on_wake=ears.wake.emit, on_text=ears.text.emit,
-                                  on_command=ears.command.emit, awake=lambda: window.awake())
+                                  on_command=ears.command.emit, awake=lambda: window.awake(),
+                                  on_status=ears.status.emit)
         listener.muted = settings.value("muted", False, type=bool)
     window = ChatWindow(speaker=speaker, settings=settings, listener=listener, chime=voice.chime)
     ears.wake.connect(window.heard_wake)
     ears.text.connect(window.heard_text)
     ears.command.connect(window.heard_command)
+    ears.status.connect(window._on_notice)  # connected before listening starts
     if listener:
         try:
             listener.start()

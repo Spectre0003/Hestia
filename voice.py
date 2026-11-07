@@ -101,13 +101,53 @@ class SentenceSplitter:
         return [s for s in spoken if s], leftover
 
 
+def _short(error):
+    """One readable line for an error, for a notice in the window."""
+    text = str(error).strip()
+    first = text.splitlines()[0] if text else type(error).__name__
+    return first if len(first) <= 160 else first[:157] + "..."
+
+
+class _Status:
+    """
+    How the voice threads tell the window what is going on — a model
+    downloading, the GPU falling back to the CPU, something failing —
+    instead of failing quietly. Everything here runs on background
+    threads, and every one of these used to be an `except: pass`: a
+    480 MB download on the first "Rise Hestia" looked exactly like
+    Hestia not hearing a word, with nothing on screen to say why.
+
+    Each distinct message is shown once per run, so a broken voice posts
+    one line rather than one for every sentence it fails to speak.
+    """
+    def __init__(self, callback=None):
+        self._callback = callback
+        self._said = set()
+        self._lock = threading.Lock()
+
+    def __call__(self, message):
+        with self._lock:
+            if self._callback is None or message in self._said:
+                return
+            self._said.add(message)
+        try:
+            self._callback(message)
+        except Exception:
+            pass  # telling the window must never be what breaks listening
+
+
+class _AlreadyReported(Exception):
+    """A failure the window has already been told about, so it isn't told twice."""
+
+
 class Speaker:
     """
     Speaks text as it arrives. synthesize/play/stop_audio default to Kokoro
     and the default sound device; tests pass their own.
     """
 
-    def __init__(self, synthesize=None, play=None, stop_audio=None):
+    def __init__(self, synthesize=None, play=None, stop_audio=None, on_status=None):
+        self._status = _Status(on_status)
         self._synthesize = synthesize or self._kokoro
         self._play = play or self._play_default
         self._stop_audio = stop_audio or self._stop_default
@@ -180,8 +220,10 @@ class Speaker:
     def _try_load(self):
         try:
             self._load_kokoro()
-        except Exception:
-            pass  # retried on first use; a broken voice must not break anything else
+        except Exception as e:
+            # Retried on first use; a broken voice must not break anything else —
+            # but it must not be silent either, or she just seems to stop talking.
+            self._status(f"[Hestia's voice couldn't load ({_short(e)}), so she'll answer in text only.]")
 
     def rest(self):
         """Let Kokoro go (standby). Loaded again by warm_up() or the next sentence."""
@@ -200,7 +242,8 @@ class Speaker:
                 continue
             try:
                 audio, rate = self._synthesize(text)
-            except Exception:
+            except Exception as e:
+                self._status(f"[Hestia couldn't speak a reply ({_short(e)}), so she'll answer in text only.]")
                 self._done()
                 continue  # one bad sentence is skipped, not a broken voice
             if generation == self._generation:
@@ -217,8 +260,9 @@ class Speaker:
             if generation == self._generation:
                 try:
                     self._play(audio, rate)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._status(f"[Hestia couldn't play audio ({_short(e)}). Check your speakers "
+                                 "or the default output device.]")
             self._done()
 
     # --- defaults: Kokoro and the sound card ---------------------------------
@@ -315,27 +359,82 @@ def _cuda_libraries():
     """NVIDIA's cuBLAS/cuDNN come as pip packages (requirements.txt); let Windows find their DLLs."""
     import glob
     import sys
-    for folder in glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin")):
+    folders = glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin"))
+    for folder in folders:
         os.add_dll_directory(folder)
         os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+    return len(folders)
 
 
-def load_wake_whisper():
+_SIZES = {"small.en": "about 480 MB", "base.en": "about 140 MB"}
+
+
+def _on_disk(name):
+    """Whether a Whisper model is already downloaded, so loading it needs no network."""
+    import glob
+    pattern = os.path.join(WHISPER_DIR, f"models--Systran--faster-whisper-{name}",
+                           "snapshots", "*", "model.bin")
+    return bool(glob.glob(pattern))
+
+
+def _announce_download(name, status):
+    """
+    faster-whisper fetches a missing model from Hugging Face on first use,
+    and nothing can be heard until it finishes — so say so. Returns
+    whether a download is about to happen.
+    """
+    missing = not _on_disk(name)
+    if missing:
+        status(f"[Downloading the speech model {name} ({_SIZES.get(name, 'a few hundred MB')}). "
+               "Hestia can't hear you until it finishes. This only happens once.]")
+    return missing
+
+
+def _quiet(message):
+    pass
+
+
+def load_wake_whisper(status=None):
     """base.en on the CPU: all that's needed to hear the three phrases (50/50 caught), and no GPU."""
+    status = status or _quiet
     from faster_whisper import WhisperModel
-    return WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", download_root=WHISPER_DIR)
+    missing = _announce_download(WHISPER_FALLBACK, status)
+    model = WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", download_root=WHISPER_DIR)
+    if missing:
+        status(f"[Speech model {WHISPER_FALLBACK} is ready.]")
+    return model
 
 
-def load_whisper():
-    """For conversations: small.en on the GPU if it works, else base.en on the CPU."""
+def load_whisper(status=None):
+    """
+    For conversations: small.en on the GPU if it works, else base.en on the
+    CPU. The fallback used to be silent, so there was no telling which one
+    was in use; now the window is told, with the reason.
+    """
+    status = status or _quiet
     from faster_whisper import WhisperModel
+    libraries = 0
+    missing = False
     try:
-        _cuda_libraries()
+        libraries = _cuda_libraries()
+        missing = _announce_download(WHISPER_MODEL, status)
         model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="int8_float16", download_root=WHISPER_DIR)
+        if missing:
+            status(f"[Speech model {WHISPER_MODEL} is ready.]")
+            missing = False
         list(model.transcribe(np.zeros(RATE, np.float32), language="en")[0])  # a missing DLL shows up here
         return model
-    except Exception:
-        return WhisperModel(WHISPER_FALLBACK, device="cpu", compute_type="int8", download_root=WHISPER_DIR)
+    except Exception as e:
+        if missing and _on_disk(WHISPER_MODEL):
+            status(f"[Speech model {WHISPER_MODEL} is ready.]")  # downloaded, then the GPU failed
+        if not libraries:
+            status("[Speech isn't running on the GPU: NVIDIA's CUDA libraries aren't installed "
+                   "(nvidia-cublas-cu12 and nvidia-cudnn-cu12, in requirements.txt), so Hestia "
+                   "is using the slower CPU model.]")
+        else:
+            status(f"[Speech isn't running on the GPU ({_short(e)}), so Hestia is using the "
+                   "slower CPU model.]")
+        return load_wake_whisper(status)
 
 
 def listening_models_present():
@@ -364,7 +463,9 @@ class Listener:
         on_command(name) "Fall Hestia" ('hush') or "Mute Hestia" ('mute'), said on their own
     """
 
-    def __init__(self, on_wake, on_text, on_command=None, awake=None, vad=None, transcribe=None):
+    def __init__(self, on_wake, on_text, on_command=None, awake=None, vad=None, transcribe=None,
+                 on_status=None):
+        self._status = _Status(on_status)
         self.on_wake, self.on_text = on_wake, on_text
         self.on_command = on_command or (lambda name: None)
         self.awake = awake or (lambda: False)
@@ -441,13 +542,21 @@ class Listener:
     def _load_wake(self):
         with self._whisper_lock:
             if self._wake_model is None:
-                self._wake_model = load_wake_whisper()
+                try:
+                    self._wake_model = load_wake_whisper(self._status)
+                except Exception as e:
+                    self._status(f"[Couldn't load the speech model ({_short(e)}), so Hestia can't hear you.]")
+                    raise _AlreadyReported(str(e)) from e
         return self._wake_model
 
     def _load_turn(self):
         with self._whisper_lock:  # warm_up() and a turn can race
             if self._turn_model is None:
-                self._turn_model = load_whisper()
+                try:
+                    self._turn_model = load_whisper(self._status)
+                except Exception as e:
+                    self._status(f"[Couldn't load the speech model ({_short(e)}), so Hestia can't hear you.]")
+                    raise _AlreadyReported(str(e)) from e
         return self._turn_model
 
     def warm_up(self):
@@ -513,8 +622,12 @@ class Listener:
             if self._stream is not None:
                 try:
                     self.process(frame)
-                except Exception:
-                    # One bad frame must not end listening for the rest of the day.
+                except _AlreadyReported:
+                    self._reset()
+                except Exception as e:
+                    # One bad frame must not end listening for the rest of the day —
+                    # but say what happened, once, rather than just going deaf.
+                    self._status(f"[Listening hit a problem ({_short(e)}).]")
                     self._reset()
 
     def set_muted(self, muted):
