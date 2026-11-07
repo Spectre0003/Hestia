@@ -46,8 +46,8 @@ def model(test, *rounds, answer="Hello there.", fail=False):
         calls.append(messages)
         if fail:
             raise ConnectionError("Ollama isn't running")
-        if script and offer_tools:
-            return "", [NS(function=NS(name=n, arguments=a)) for n, a in script.pop(0)]
+        if offer_tools:  # deciding: shows nothing
+            return "", [{"function": {"name": n, "arguments": a}} for n, a in script.pop(0)] if script else []
         ui.text(answer)
         return answer, []
 
@@ -129,6 +129,13 @@ class TurnTest(unittest.TestCase):
         self.assertEqual(len(self.ui.questions), 1)
         self.assertEqual(storage.get_all_memories(self.session.conn), [])
 
+    def test_tools_are_decided_without_the_old_english_touch_and_the_reply_has_it(self):
+        calls = model(self)
+        self.session.handle("hi")
+        decide, speak = calls[0][0]["content"], calls[-1][0]["content"]
+        self.assertNotIn("Old-English touch", decide)
+        self.assertIn("Old-English touch", speak)
+
     def test_new_starts_a_fresh_session(self):
         model(self)
         self.session.handle("hi")
@@ -136,6 +143,52 @@ class TurnTest(unittest.TestCase):
         self.session.handle("new")
         self.assertNotEqual(self.session.session_id, old)
         self.assertEqual([m["role"] for m in self.session.history], ["system"])
+
+
+class DecideTest(unittest.TestCase):
+    """stream_reply with tools offered, against a stand-in for Ollama's streamed chunks."""
+
+    def setUp(self):
+        fake_tool(self, "system_tools", "launch_application")
+        tools._tools["launch_application"]["parameters"]["properties"] = {"name": {"type": "string"}}
+
+    def decide(self, *pieces, calls=None):
+        sent = []
+
+        def chat(**kw):
+            for piece in pieces:
+                sent.append(piece)
+                yield NS(message=NS(content=piece, tool_calls=None))
+            if calls:
+                yield NS(message=NS(content="", tool_calls=[NS(function=NS(name=n, arguments=a)) for n, a in calls]))
+
+        self.addCleanup(setattr, engine, "chat", engine.chat)
+        engine.chat = chat
+        ui = RecordingUI()
+        text, found = engine.stream_reply([], ui)
+        self.assertEqual((text, ui.texts), ("", []))  # deciding never shows anything
+        return found, sent
+
+    def test_a_real_tool_call_is_returned(self):
+        found, _ = self.decide(calls=[("launch_application", {"name": "Teams"})])
+        self.assertEqual(found, [{"function": {"name": "launch_application", "arguments": {"name": "Teams"}}}])
+
+    def test_a_plain_answer_stops_at_its_first_word(self):
+        found, sent = self.decide("Aye", ", launching", " Teams for thee.")
+        self.assertEqual((found, sent), ([], ["Aye"]))  # no tool's name starts with "aye"
+
+    def test_calls_written_out_as_text_are_made(self):
+        # Each seen live from qwen2.5 with the old-English touch in its prompt.
+        for written in ('launch_application("Microsoft Teams")', 'launch_application(name="Microsoft Teams")',
+                        '-launch_application {"name": "Microsoft Teams"}', 'Launch_application("Microsoft Teams")'):
+            found, _ = self.decide(written[:6], written[6:])
+            self.assertEqual(found, [{"function": {"name": "launch_application",
+                                                   "arguments": {"name": "Microsoft Teams"}}}], written)
+
+    def test_text_that_only_looks_like_a_call_is_not_made(self):
+        for text in ('launch_application("a", "b")', 'launch_application(__import__("os"))',
+                     'delete_everything("x")', 'launch_application("Teams") now', "Launch Application: Teams"):
+            self.assertEqual(self.decide(text)[0], [], text)
 
 
 class IdleTest(unittest.TestCase):

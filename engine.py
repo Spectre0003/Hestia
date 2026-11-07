@@ -19,7 +19,10 @@ raises StartupError, because a window can't usefully print and quit.
 This was chat.py's main loop until Stage 10; the behaviour is the same.
 """
 
+import ast
+import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -79,9 +82,11 @@ def load_personality(path=PERSONALITY_PATH):
     return data
 
 
-def build_system_prompt(persona):
+def build_system_prompt(persona, voice=True):
     """
     Turn the parsed personality dict into a single system-prompt string.
+    voice=False leaves out archaic_speech: the prompt that decides on tools
+    goes without it (see stream_reply).
 
     Order matters: identity first, then character description, then the
     hard boundaries, then short imperative directives LAST. Models weight
@@ -130,7 +135,7 @@ def build_system_prompt(persona):
     ]
     for key, label in style_fields:
         value = persona.get(key)
-        if value:
+        if value and (voice or key != "archaic_speech"):
             lines.append(f"{label}: {value.strip()}")
 
     add_list("avoids", "Never do these")
@@ -150,29 +155,90 @@ def build_system_prompt(persona):
 
 def stream_reply(messages, ui, offer_tools=True):
     """
-    Make one model call, sending text to the front end as it streams.
-    Returns (text, tool_calls) — tool_calls is empty when the model
-    answered in plain text rather than asking for a tool.
+    Make one model call. Returns (text, tool_calls).
+
+    With tools offered it only decides: it shows nothing, returns ("", the
+    calls), and stops at the first words of a plain answer (calls then []).
+    Without tools it is the reply, streamed to the front end.
+
+    Split because the old-English touch made the model write tool calls
+    out as text ("launch_application("Teams")") instead of making them —
+    Teams failed 7 times in 12. So tools are decided with a prompt that
+    leaves it out, and she speaks with it.
     """
+    if offer_tools:
+        calls, text = [], ""
+        for chunk in chat(model=MODEL_NAME, messages=messages, tools=tools.tool_schemas() or None,
+                          stream=True, keep_alive=KEEP_ALIVE):
+            calls.extend(chunk.message.tool_calls or [])
+            text += chunk.message.content or ""
+            if not calls and not _may_be_written_call(text):
+                break  # a plain answer: the voiced call writes it
+        if calls:
+            return "", [{"function": {"name": c.function.name, "arguments": dict(c.function.arguments or {})}}
+                        for c in calls]
+        written = _written_call(text)
+        return "", [written] if written else []
+
     text = ""
-    tool_calls = []
-    schemas = tools.tool_schemas() if offer_tools else []
-    stream = chat(model=MODEL_NAME, messages=messages, tools=schemas or None, stream=True, keep_alive=KEEP_ALIVE)
-    for chunk in stream:
+    for chunk in chat(model=MODEL_NAME, messages=messages, stream=True, keep_alive=KEEP_ALIVE):
         token = chunk.message.content or ""
         if token:
             ui.text(token)
         text += token
-        if chunk.message.tool_calls:
-            tool_calls.extend(chunk.message.tool_calls)
-    return text, tool_calls
+    return text, []
 
 
-def run_turn(conn, session_id, call_messages, ui):
+_WRITTEN_CALL = re.compile(r"[\s\-*`]*(\w+)\s*(\(.*\)|\{.*\})[\s`]*", re.S)
+
+
+def _may_be_written_call(text):
+    """Whether the reply so far could still be a tool call written out as text."""
+    head = text.lstrip(" \n-*`")
+    word = re.match(r"\w*", head).group().lower()
+    if word != head.lower():  # the first word is complete
+        return word in tools.available_tools()
+    return any(name.startswith(word) for name in tools.available_tools())
+
+
+def _written_call(text):
+    """
+    A tool call the model wrote out as text instead of making it —
+    launch_application("Teams"), launch_application(name="Teams"),
+    launch_application {"name": "Teams"} — as a real call, or None.
+    The arguments are still checked by tools.execute, like any call.
+    """
+    match = _WRITTEN_CALL.fullmatch(text)
+    name = match and match.group(1).lower()
+    if not name or name not in tools.available_tools():
+        return None
+    body = match.group(2)
+    try:
+        if body.startswith("{"):
+            arguments = json.loads(body)
+        else:
+            call = ast.parse("f" + body, mode="eval").body
+            if not isinstance(call, ast.Call):
+                return None
+            arguments = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords if kw.arg}
+            if call.args:  # positional: only clear when the tool takes one argument
+                schema = next(s["function"]["parameters"] for s in tools.tool_schemas()
+                              if s["function"]["name"] == name)
+                params = list(schema.get("properties", {}))
+                if len(call.args) != 1 or len(params) != 1:
+                    return None
+                arguments[params[0]] = ast.literal_eval(call.args[0])
+    except (ValueError, SyntaxError, TypeError):
+        return None
+    return {"function": {"name": name, "arguments": arguments}} if isinstance(arguments, dict) else None
+
+
+def run_turn(conn, session_id, call_messages, ui, voice_prompt=None):
     """
     Get the model's reply to one user message, running any tools it asks
-    for along the way, until it answers in plain text or runs out of
-    rounds (tools.MAX_TOOL_ROUNDS).
+    for along the way (up to tools.MAX_TOOL_ROUNDS rounds), then the reply
+    itself in a call with no tools offered. voice_prompt, if given,
+    replaces the system prompt (call_messages[0]) for that reply.
 
     Full tool results only ever go into `call_messages`, for this turn.
     What's returned for history keeps each tool call but swaps its
@@ -181,22 +247,14 @@ def run_turn(conn, session_id, call_messages, ui):
     Returns (reply_text, tool_turns): tool_turns is the history-ready
     tool messages, empty if no tool was used.
     """
-    reply_parts = []
     tool_turns = []
     turn = {}  # what this turn has read, for tools.execute's network rule
 
     for _ in range(tools.MAX_TOOL_ROUNDS):
-        text, tool_calls = stream_reply(call_messages, ui)
-        reply_parts.append(text)
-        if not tool_calls:
+        _, calls = stream_reply(call_messages, ui)
+        if not calls:
             break
-
-        calls = [
-            {"function": {"name": call.function.name, "arguments": dict(call.function.arguments or {})}}
-            for call in tool_calls
-        ]
-        call_messages.append({"role": "assistant", "content": text, "tool_calls": calls})
-        # The round's text is already part of the final reply, so it isn't repeated here.
+        call_messages.append({"role": "assistant", "content": "", "tool_calls": calls})
         tool_turns.append({"role": "assistant", "content": "", "tool_calls": calls})
         for call in calls:
             name = call["function"]["name"]
@@ -204,13 +262,11 @@ def run_turn(conn, session_id, call_messages, ui):
             result = tools.execute(conn, session_id, name, call["function"]["arguments"], ui.approve, turn)
             call_messages.append({"role": "tool", "tool_name": name, "content": result})
             tool_turns.append({"role": "tool", "tool_name": name, "content": tools.RESULT_NOT_KEPT})
-    else:
-        # Out of rounds — one last call with no tools offered, so the
-        # model has to answer in words instead of asking for another.
-        text, _ = stream_reply(call_messages, ui, offer_tools=False)
-        reply_parts.append(text)
 
-    reply = " ".join(part.strip() for part in reply_parts if part.strip())
+    if voice_prompt:
+        call_messages = [{"role": "system", "content": voice_prompt}, *call_messages[1:]]
+    reply, _ = stream_reply(call_messages, ui, offer_tools=False)
+    reply = reply.strip()
     # Live testing caught the model listing "search results" with made-up
     # links in a turn where no search ran. Prompt wording hasn't stopped this
     # kind of thing before, so the code says it instead. Shown, not saved.
@@ -303,7 +359,9 @@ class Session:
 
     def _start_history(self):
         """The system prompt, then this session's recent messages (none for a new one)."""
-        system_prompt = build_system_prompt(self.persona) + "\n\n" + tools.TOOL_GUIDANCE
+        # Tools are decided without her old-English touch and she speaks with it (see stream_reply).
+        system_prompt = build_system_prompt(self.persona, voice=False) + "\n\n" + tools.TOOL_GUIDANCE
+        self.voice_prompt = build_system_prompt(self.persona) + "\n\n" + tools.TOOL_GUIDANCE
         self.history = [{"role": "system", "content": system_prompt}]
         self.history.extend(storage.load_recent_messages(self.conn, self.session_id))
         self.exchanges = 0
@@ -428,7 +486,7 @@ class Session:
             call_messages.insert(-1, {"role": "system", "content": memory_context})
 
         try:
-            reply, tool_turns = run_turn(self.conn, self.session_id, call_messages, self.ui)
+            reply, tool_turns = run_turn(self.conn, self.session_id, call_messages, self.ui, self.voice_prompt)
         except Exception as e:
             self.ui.notice(f"[Error talking to Ollama: {e}. Is Ollama running? "
                            f"Try 'ollama run {MODEL_NAME}' in a terminal to check.]")

@@ -1,7 +1,6 @@
 import contextlib
 import io
 import unittest
-from types import SimpleNamespace as NS
 
 import support
 from support import fake_tool, temp_db
@@ -90,8 +89,8 @@ class RunTurnWiringTest(unittest.TestCase):
         script = list(rounds)
 
         def stream_reply(messages, ui, offer_tools=True):
-            if script and offer_tools:
-                return "", [NS(function=NS(name=n, arguments={})) for n in script.pop(0)]
+            if offer_tools:
+                return "", [{"function": {"name": n, "arguments": {}}} for n in script.pop(0)] if script else []
             return answer, []
 
         self.addCleanup(setattr, engine, "stream_reply", engine.stream_reply)
