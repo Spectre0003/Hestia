@@ -47,6 +47,8 @@ For a desktop icon, run `venv\Scripts\python gui.py --desktop-shortcut` once. He
 
 Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example` files), and `docker compose -f searxng/compose.yaml up -d` for web search.
 
+Her character lives in `personality.yaml` and her voice in `voice.yaml` — one Kokoro voice or a blend, speed, accent and quality. To hear the options, run `venv\Scripts\python scripts\voice_audition.py` (add `--more` for more voices, `--tune` for variations on the current favourite). For `quality: high`, the smoother full-precision model, run `venv\Scripts\python scripts\download_models.py --high` once.
+
 ## Roadmap
 
 | Stage | Version | Focus | New tools | Status |
@@ -62,7 +64,7 @@ Optional, per machine: `apps.yaml`, `repos.yaml` and `.env` (copy the `.example`
 | 8 | v0.8 | Internet tools | Self-hosted SearXNG, fetch_page, network tier, `.env`/secrets | ✅ Complete |
 | 9 | v0.9 | Advanced memory | nomic-embed-text via Ollama, vectors in SQLite, recall tool | ✅ Complete |
 | 10 | v1.0 | Actual assistant | Qt window + tray, wake word (openWakeWord), faster-whisper, Kokoro, start with Windows | ✅ Complete |
-| 11 | v1.1 | Optimisation and polish | "Rise Hestia" conversations, Whisper on the GPU, standby (loads on wake), any app, Docker on demand, new look | ✅ Complete |
+| 11 | v1.1 | Optimisation and polish | "Rise Hestia" conversations, Whisper on the GPU, standby (loads on wake), any app, Docker on demand, her lore and old-English manner, a voice chosen by audition, hearth-fire indicator and violet theme | ✅ Complete |
 
 Detailed, dated build notes for each stage live in [PROGRESS.md](./PROGRESS.md).
 
