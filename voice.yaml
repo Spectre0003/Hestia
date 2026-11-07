@@ -1,0 +1,19 @@
+# How Hestia sounds. Run  venv\Scripts\python scripts\voice_audition.py
+# to hear the candidates, then set what you like here. Takes effect the
+# next time she wakes ("Rise Hestia") — no restart needed.
+
+# One Kokoro voice, or a blend mixed by weight:
+#   voice: bf_emma
+#   voice: {af_heart: 60, bf_emma: 40}
+voice: {af_heart: 60, bf_emma: 40}
+
+# 0.5 (slow) to 1.5 (fast). A touch under 1.0 sounds calmer.
+speed: 0.92
+
+# en-us or en-gb. British voices (bf_...) sound most natural with en-gb.
+accent: en-gb
+
+# standard: the int8 model (~88 MB), fastest.
+# high: full precision (~310 MB), smoother and less mechanical, a little slower.
+#       Download it once with  venv\Scripts\python scripts\download_models.py --high
+quality: high

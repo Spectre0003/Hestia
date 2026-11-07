@@ -97,6 +97,10 @@ def build_system_prompt(persona):
         f"You are {persona['name']}.",
         persona.get("essence", "").strip(),
     ]
+    # Who she is comes straight after what she is, before how she behaves.
+    lore = persona.get("lore")
+    if lore:
+        lines.append(f"Your story: {lore.strip()}")
 
     def add_list(key, label):
         values = persona.get(key)
@@ -120,6 +124,7 @@ def build_system_prompt(persona):
         ("memory_style", "Using what you remember"),
         ("answer_shape", "Shape of an answer"),
         ("speech_style", "Speech style"),
+        ("archaic_speech", "Old-English touch"),
         ("voice_style", "Talking out loud"),
         ("formality_range", "Formality"),
     ]

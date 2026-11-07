@@ -21,7 +21,56 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(_HERE, "models")
 KOKORO_MODEL = os.path.join(MODELS, "kokoro", "kokoro-v1.0.int8.onnx")
 KOKORO_VOICES = os.path.join(MODELS, "kokoro", "voices-v1.0.bin")
-VOICE = "af_heart"  # a calm, warm voice; Kokoro has others (af_bella, bf_emma, ...)
+# Full precision: smoother and less "mechanical" than int8, ~310 MB, a little slower.
+KOKORO_MODEL_HIGH = os.path.join(MODELS, "kokoro", "kokoro-v1.0.onnx")
+VOICE = "af_heart"  # the default when voice.yaml doesn't say otherwise
+VOICE_SETTINGS = os.path.join(_HERE, "voice.yaml")
+_DEFAULTS = {"voice": VOICE, "speed": 1.0, "accent": "en-us", "quality": "standard"}
+
+
+def load_voice_settings(path=VOICE_SETTINGS):
+    """
+    How she sounds, from voice.yaml: one Kokoro voice or a blend of several,
+    speed, accent and model quality (scripts/voice_audition.py plays the
+    candidates). A missing or broken file means the defaults — her voice
+    should never be the reason she can't start.
+    """
+    settings = dict(_DEFAULTS)
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            settings.update(yaml.safe_load(f) or {})
+    except Exception:
+        pass
+    try:
+        settings["speed"] = min(1.5, max(0.5, float(settings["speed"])))
+    except (TypeError, ValueError):
+        settings["speed"] = 1.0
+    if settings["accent"] not in ("en-us", "en-gb"):
+        settings["accent"] = "en-us"
+    return settings
+
+
+def resolve_voice(tts, choice):
+    """
+    A voice name ("af_heart") as is, or a blend ({af_heart: 60, bf_emma: 40})
+    mixed into one voice by weight. Raises ValueError naming any voice
+    Kokoro doesn't have.
+    """
+    known = set(tts.get_voices())
+    if isinstance(choice, str):
+        if choice not in known:
+            raise ValueError(f"there's no voice called '{choice}'")
+        return choice
+    if not isinstance(choice, dict) or not choice:
+        raise ValueError("voice should be a name or a blend like {af_heart: 60, bf_emma: 40}")
+    unknown = [name for name in choice if name not in known]
+    if unknown:
+        raise ValueError(f"there's no voice called '{unknown[0]}'")
+    total = float(sum(choice.values()))
+    if total <= 0:
+        raise ValueError("a blend's weights must add up to more than zero")
+    return sum(tts.get_voice_style(name) * (weight / total) for name, weight in choice.items())
 
 CODE_NOTE = "I've put some code on screen."
 
@@ -270,13 +319,30 @@ class Speaker:
         with self._tts_lock:  # warm_up() and the first sentence can race
             if self._tts is None:
                 from kokoro_onnx import Kokoro
-                tts = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
-                tts.create("Ready.", voice=VOICE, lang="en-us")  # first call also sets up phonemes
+                settings = load_voice_settings()
+                model = KOKORO_MODEL
+                if settings["quality"] == "high":
+                    if os.path.exists(KOKORO_MODEL_HIGH):
+                        model = KOKORO_MODEL_HIGH
+                    else:
+                        self._status("[voice.yaml asks for high quality, but the full model isn't "
+                                     "downloaded (scripts\\download_models.py --high), so Hestia is "
+                                     "using the standard one.]")
+                tts = Kokoro(model, KOKORO_VOICES)
+                try:
+                    voice = resolve_voice(tts, settings["voice"])
+                except ValueError as e:
+                    self._status(f"[voice.yaml: {e}, so Hestia is using {VOICE}.]")
+                    voice = VOICE
+                self._voice = (voice, settings["speed"], settings["accent"])
+                tts.create("Ready.", voice=voice, lang=settings["accent"])  # first call also sets up phonemes
                 self._tts = tts
             return self._tts
 
     def _kokoro(self, text):
-        return self._load_kokoro().create(text, voice=VOICE, speed=1.0, lang="en-us")
+        tts = self._load_kokoro()
+        voice, speed, accent = self._voice
+        return tts.create(text, voice=voice, speed=speed, lang=accent)
 
     @staticmethod
     def _play_default(audio, rate):

@@ -3,6 +3,8 @@ Download the voice models Hestia v1.0 uses into models/ (gitignored).
 Run once per machine:  venv\\Scripts\\python scripts\\download_models.py
 
   models/kokoro/    Kokoro text-to-speech, int8 (~88 MB) + voices (~26 MB)
+                    with --high, also the full-precision model (~310 MB), for
+                    `quality: high` in voice.yaml
   models/whisper/   faster-whisper small.en (GPU, ~480 MB) and base.en (CPU fallback, ~140 MB)
   models/wakeword/  Silero speech detector, from openWakeWord (~2 MB)
 
@@ -11,18 +13,20 @@ Files that already exist are skipped.
 """
 
 import os
+import sys
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(ROOT, "models")
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 KOKORO_FILES = ("kokoro-v1.0.int8.onnx", "voices-v1.0.bin")
+KOKORO_HIGH = "kokoro-v1.0.onnx"
 
 
 def main():
     kokoro = os.path.join(MODELS, "kokoro")
     os.makedirs(kokoro, exist_ok=True)
-    for name in KOKORO_FILES:
+    for name in KOKORO_FILES + ((KOKORO_HIGH,) if "--high" in sys.argv else ()):
         target = os.path.join(kokoro, name)
         if not os.path.exists(target):
             print(f"Downloading {name}...")

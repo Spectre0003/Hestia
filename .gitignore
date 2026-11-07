@@ -37,3 +37,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Voice samples from scripts/voice_audition.py --save
+audition/
