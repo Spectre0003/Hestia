@@ -37,7 +37,7 @@ import time
 
 from mcp import ClientSession, StdioServerParameters
 from mcp import types as mcp_types
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 
 import storage
 
@@ -237,7 +237,10 @@ async def _hold_connection(name, command, ready):
     managers can't be exited from a different task than entered them.
     """
     try:
-        params = StdioServerParameters(command=command[0], args=command[1:])
+        # MCP's default environment leaves out ProgramFiles, where Docker finds its
+        # CLI plugins: without it "docker desktop stop" fails with "unknown flag".
+        env = dict(get_default_environment(), ProgramFiles=os.environ.get("ProgramFiles", r"C:\Program Files"))
+        params = StdioServerParameters(command=command[0], args=command[1:], env=env)
         with open(SERVER_LOG_PATH, "a", encoding="utf-8") as errlog:
             async with stdio_client(params, errlog=errlog) as (read, write):
                 async with ClientSession(read, write) as session:
