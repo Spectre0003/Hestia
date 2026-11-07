@@ -82,11 +82,18 @@ def load_personality(path=PERSONALITY_PATH):
     return data
 
 
-def build_system_prompt(persona, voice=True):
+# The call that decides on tools shows the user nothing, so it gets no persona: with
+# hers, lines like "honest about what she can actually do here" had the model answer
+# "I can't check the RAM" instead of checking. Tool choices right: 47/72 with the
+# persona, 71/72 with this, and no tools called for small talk with either.
+DECIDE_PROMPT = ("You are {name}, a personal assistant running on the user's own Windows computer. "
+                 "Your tools act on this computer and the web. When a request needs one, call it; "
+                 "never say you can't do something a tool does.")
+
+
+def build_system_prompt(persona):
     """
     Turn the parsed personality dict into a single system-prompt string.
-    voice=False leaves out archaic_speech: the prompt that decides on tools
-    goes without it (see stream_reply).
 
     Order matters: identity first, then character description, then the
     hard boundaries, then short imperative directives LAST. Models weight
@@ -135,7 +142,7 @@ def build_system_prompt(persona, voice=True):
     ]
     for key, label in style_fields:
         value = persona.get(key)
-        if value and (voice or key != "archaic_speech"):
+        if value:
             lines.append(f"{label}: {value.strip()}")
 
     add_list("avoids", "Never do these")
@@ -161,10 +168,10 @@ def stream_reply(messages, ui, offer_tools=True):
     calls), and stops at the first words of a plain answer (calls then []).
     Without tools it is the reply, streamed to the front end.
 
-    Split because the old-English touch made the model write tool calls
-    out as text ("launch_application("Teams")") instead of making them —
-    Teams failed 7 times in 12. So tools are decided with a prompt that
-    leaves it out, and she speaks with it.
+    Split because her persona hurt the tool choice: the old-English touch
+    made the model write calls out as text ("launch_application("Teams")"),
+    and the rest made it say it couldn't. So tools are decided with
+    DECIDE_PROMPT, and she speaks with her full persona.
     """
     if offer_tools:
         calls, text = [], ""
@@ -359,8 +366,8 @@ class Session:
 
     def _start_history(self):
         """The system prompt, then this session's recent messages (none for a new one)."""
-        # Tools are decided without her old-English touch and she speaks with it (see stream_reply).
-        system_prompt = build_system_prompt(self.persona, voice=False) + "\n\n" + tools.TOOL_GUIDANCE
+        # Tools are decided without her persona and she speaks with it (see stream_reply).
+        system_prompt = DECIDE_PROMPT.format(name=self.persona["name"]) + "\n\n" + tools.TOOL_GUIDANCE
         self.voice_prompt = build_system_prompt(self.persona) + "\n\n" + tools.TOOL_GUIDANCE
         self.history = [{"role": "system", "content": system_prompt}]
         self.history.extend(storage.load_recent_messages(self.conn, self.session_id))

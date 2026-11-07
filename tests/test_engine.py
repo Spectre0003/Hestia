@@ -129,12 +129,14 @@ class TurnTest(unittest.TestCase):
         self.assertEqual(len(self.ui.questions), 1)
         self.assertEqual(storage.get_all_memories(self.session.conn), [])
 
-    def test_tools_are_decided_without_the_old_english_touch_and_the_reply_has_it(self):
+    def test_tools_are_decided_without_her_persona_and_the_reply_has_it(self):
         calls = model(self)
         self.session.handle("hi")
         decide, speak = calls[0][0]["content"], calls[-1][0]["content"]
-        self.assertNotIn("Old-English touch", decide)
-        self.assertIn("Old-English touch", speak)
+        for persona_part in ("Old-English touch", "Your story"):
+            self.assertNotIn(persona_part, decide)
+            self.assertIn(persona_part, speak)
+        self.assertIn(tools.TOOL_GUIDANCE, decide)
 
     def test_new_starts_a_fresh_session(self):
         model(self)
