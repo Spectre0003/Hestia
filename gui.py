@@ -27,8 +27,8 @@ import time
 import unicodedata
 
 from PySide6.QtCore import QEasingCurve, QObject, QPointF, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap,
-                           QRadialGradient, QTextDocument)
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap, QRadialGradient, QTextDocument)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -63,7 +63,7 @@ _WANTS_REST = re.compile(r"\b(read|rest|all|full|whole|continue|go on|carry on|y
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 
 # Said on her way out of a conversation ("Fall Hestia").
-FAREWELLS = ("Okay.", "Alright, I'll be here.", "Sure. Talk later.", "Okay — I'm around if you need me.")
+FAREWELLS = ("Okay.", "Alright, I'll be here.", "Fare thee well.", "Until next time, then.")
 
 # Said on their own in a conversation, these just stop her talking.
 STOP_WORDS = {"stop", "cancel", "never mind", "nevermind", "be quiet", "quiet", "shush", "that's enough"}
@@ -79,54 +79,77 @@ FONT = "Yu Gothic UI"          # clean, and from the same Japanese design family
 CODE_FONT = "Cascadia Mono"
 BUBBLE_SHARE = 0.78            # a message bubble is at most this much of the transcript's width
 
-# Her state, shown by the orb in the window and the tray icon's colour.
-STATE_COLOURS = {"starting": "#6c7380", "ready": "#e07a3f", "listening": "#3ecf8e",
-                 "thinking": "#f0b44c", "speaking": "#5aa7ff", "muted": "#6c7380"}
-STATE_LABELS = {"starting": "Starting…", "ready": "Say “Rise Hestia”", "listening": "Listening…",
-                "speaking": "Speaking…",
-                "thinking": "Thinking…", "muted": "Microphone muted"}
+# Her state, shown by the hearth-flame in the window and the tray icon's colour.
+# Ember is hers at rest and speaking; violet is her attention — listening and
+# thinking — so the two read apart at a glance.
+STATE_COLOURS = {"starting": "#6c6680", "resting": "#7b62a8", "ready": "#e07a3f", "listening": "#a78bfa",
+                 "thinking": "#c4a6ff", "speaking": "#ff9a4d", "muted": "#5a5568"}
+STATE_LABELS = {"starting": "Kindling…", "resting": "Resting — say “Rise Hestia”", "ready": "Say “Rise Hestia”",
+                "listening": "Listening…", "speaking": "Speaking…", "thinking": "Thinking…",
+                "muted": "Microphone muted"}
 
+# How the flame looks in each state:
+# (flame, core, glow or None, height 0-1, flicker speed, flicker size, animated)
+FLAME_LOOK = {
+    "starting":  ("#6c6680", "#b3adc4", "#6c6680", 0.50, 1.0, 0.06, True),
+    "resting":   ("#9a4f2c", "#d98a52", "#5b3f8a", 0.32, 0.5, 0.04, False),
+    "ready":     ("#e07a3f", "#ffd29a", "#e07a3f", 0.70, 1.0, 0.06, True),
+    "listening": ("#e8833f", "#ffe3b8", "#a78bfa", 0.82, 1.3, 0.07, True),
+    "thinking":  ("#f0a64c", "#fff0c8", "#a78bfa", 0.76, 1.8, 0.08, True),
+    "speaking":  ("#ff8a3d", "#fff2d6", "#ff9a4d", 0.92, 3.2, 0.14, True),
+    "muted":     ("#4a4558", "#6c6680", None, 0.26, 0.0, 0.00, False),
+}
+
+# Night violet with ember: her side of the window is violet, yours and the
+# send button are ember, so the purple has something to contrast with.
 APP_STYLE = """
-QMainWindow, QWidget#central, QDialog, QMessageBox { background: #14161b; color: #e6e8ec; }
-QLabel { color: #e6e8ec; }
-QLabel#title { font-size: 18pt; font-weight: 600; letter-spacing: 1px; }
-QLabel#state { color: #8a919e; font-size: 10pt; }
-QScrollArea#transcript { background: #181b22; border: 1px solid #222731; border-radius: 18px; }
-QWidget#transcriptInner { background: #181b22; }
-QLabel#you { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c8642c, stop:1 #e0843f);
+QMainWindow, QDialog, QMessageBox { background: #110d18; color: #ece8f4; }
+QWidget#central { background: qradialgradient(cx:0.5, cy:0, radius:1.1, fx:0.5, fy:0,
+                  stop:0 #22183a, stop:0.55 #140f1e, stop:1 #100c16); }
+QLabel { color: #ece8f4; background: transparent; }
+QLabel#title { font-family: "Constantia", "Palatino Linotype", Georgia, serif; font-size: 20pt;
+               letter-spacing: 3px; color: #f3ecff; }
+QLabel#state { color: #a99cc4; font-size: 10pt; }
+QScrollArea#transcript { background: rgba(22, 16, 32, 210); border: 1px solid #2c2340; border-radius: 18px; }
+QWidget#transcriptInner { background: transparent; }
+QLabel#you { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c8642c, stop:1 #e8893f);
              color: #fff7f0; border-radius: 16px; padding: 10px 15px; font-size: 11pt; }
-QLabel#hestia { background: #242934; color: #eceef2; border: 1px solid #2e3441; border-radius: 16px;
-                padding: 10px 15px; font-size: 11pt; }
-QLabel#speaker { color: #7d8594; font-size: 8.5pt; padding: 0 6px; }
-QLabel#notice { color: #8a919e; font-size: 9pt; font-style: italic; padding: 2px 30px; }
-QLabel#output { background: #11141a; color: #c9d1dc; border: 1px solid #262c37; border-radius: 12px;
+QLabel#hestia { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #251c38, stop:1 #2b2042);
+                color: #efeaf7; border: 1px solid #3d2f5c; border-radius: 16px; padding: 10px 15px; font-size: 11pt; }
+QLabel#speaker { color: #b9a3e3; font-size: 8.5pt; padding: 0 6px; }
+QLabel#notice { color: #9488ad; font-size: 9pt; font-style: italic; padding: 2px 30px; }
+QLabel#output { background: #0f0b15; color: #d4cde3; border: 1px solid #2c2340; border-radius: 12px;
                 padding: 12px 14px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 9.5pt; }
-QLabel#welcome { color: #8a919e; font-size: 12pt; }
-QPlainTextEdit { background: #1b1f27; border: 1px solid #2c3340; border-radius: 10px; color: #e6e8ec; }
-QLineEdit { background: #1f242d; border: 1px solid #2c3340; border-radius: 14px; padding: 10px 18px;
-            color: #e6e8ec; font-size: 11pt; selection-background-color: #e07a3f; }
-QLineEdit:focus { border: 1px solid #e07a3f; }
-QLineEdit:disabled { color: #6c7380; }
-QPushButton { background: #262c37; color: #e6e8ec; border: none; border-radius: 16px; padding: 8px 18px; }
-QPushButton:hover { background: #303846; }
+QLabel#welcome { color: #a99cc4; font-size: 12pt; }
+QPlainTextEdit { background: #1a1426; border: 1px solid #33284a; border-radius: 10px; color: #ece8f4; }
+QLineEdit { background: #1a1426; border: 1px solid #33284a; border-radius: 14px; padding: 10px 18px;
+            color: #ece8f4; font-size: 11pt; selection-background-color: #8b5cf6; }
+QLineEdit:focus { border: 1px solid #a78bfa; }
+QLineEdit:disabled { color: #6c6680; }
+QPushButton { background: #2a2140; color: #ece8f4; border: none; border-radius: 16px; padding: 8px 18px; }
+QPushButton:hover { background: #3a2d58; }
 QPushButton#send { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #e07a3f, stop:1 #f0a35e);
                    color: white; font-weight: 600; border-radius: 14px; padding: 11px 24px; }
 QPushButton#send:hover { background: #f0a35e; }
-QPushButton#send:disabled { background: #303846; color: #6c7380; }
+QPushButton#send:disabled { background: #2a2140; color: #6c6680; }
 QToolBar { background: transparent; border: none; spacing: 6px; }
-QToolButton { background: #1f242d; color: #c9ccd3; border: 1px solid #2c3340; border-radius: 13px; padding: 5px 13px; }
-QToolButton:hover { background: #2a303b; border-color: #e07a3f; }
-QToolButton:checked { background: #e07a3f; color: white; border-color: #e07a3f; }
-QStatusBar { background: #14161b; color: #7d8594; }
+QToolButton { background: rgba(30, 22, 46, 200); color: #d6cce8; border: 1px solid #33284a; border-radius: 13px;
+              padding: 5px 13px; }
+QToolButton:hover { background: #2c2242; border-color: #a78bfa; }
+QToolButton:checked { background: #7c4dde; color: white; border-color: #a78bfa; }
+QStatusBar { background: #100c16; color: #8f86a3; }
 QScrollBar:vertical { background: transparent; width: 10px; margin: 6px 2px; }
-QScrollBar::handle:vertical { background: #343b48; border-radius: 4px; min-height: 30px; }
-QScrollBar::handle:vertical:hover { background: #e07a3f; }
+QScrollBar::handle:vertical { background: #3a2d55; border-radius: 4px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: #a78bfa; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical,
 QScrollBar::sub-page:vertical { height: 0; background: none; }
-QMenu { background: #1b1f27; color: #e6e8ec; border: 1px solid #2c3340; padding: 4px; }
+QMenu { background: #1a1426; color: #ece8f4; border: 1px solid #33284a; padding: 4px; }
 QMenu::item { padding: 6px 22px; border-radius: 6px; }
-QMenu::item:selected { background: #e07a3f; color: white; }
+QMenu::item:selected { background: #7c4dde; color: white; }
 """
+
+
+
 
 
 def _visible(value):
@@ -259,49 +282,101 @@ class Ears(QObject):
     status = Signal(str)
 
 
-class Orb(QWidget):
-    """A glowing circle in her state's colour: it breathes while listening, spins while thinking."""
+class Hearth(QWidget):
+    """
+    Her state as a small hearth-fire: a low ember while resting, a steady
+    flame when ready, a violet glow that breathes while listening, violet
+    sparks circling while thinking, a flame that leaps while speaking, and
+    a cold coal when muted. Only animates when there's something to show:
+    resting and muted cost no CPU.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(46, 46)
+        self.setFixedSize(60, 64)
         self.state, self.phase = "starting", 0.0
         self._timer = QTimer(self, interval=33)
         self._timer.timeout.connect(self._tick)
+        self._timer.start()
 
     def set_state(self, state):
         self.state = state
-        # Only animates when there's something to show: idle costs no CPU.
-        self._timer.start() if state in ("listening", "thinking", "speaking") else self._timer.stop()
+        self._timer.start() if FLAME_LOOK[state][6] else self._timer.stop()
         self.update()
 
     def _tick(self):
-        self.phase = (self.phase + 0.05) % (2 * math.pi)
+        self.phase = (self.phase + 0.033) % (200 * math.pi)
         self.update()
 
+    @staticmethod
+    def _flame(cx, base, height, width, sway):
+        path = QPainterPath(QPointF(cx, base))
+        path.cubicTo(cx - width * 1.15, base, cx - width * 0.85, base - height * 0.55, cx + sway, base - height)
+        path.cubicTo(cx + width * 0.85, base - height * 0.55, cx + width * 1.15, base, cx, base)
+        return path
+
     def paintEvent(self, event):
-        colour = QColor(STATE_COLOURS[self.state])
+        flame, core, glow, tall, speed, size, _ = FLAME_LOOK[self.state]
+        t = self.phase * speed
+        # Layered sines read as flicker; one sine reads as a metronome.
+        flicker = size * (math.sin(t * 7.0) * 0.5 + math.sin(t * 11.3 + 1.7) * 0.3 + math.sin(t * 3.1) * 0.2)
+        if self.state == "speaking":
+            flicker = size * abs(math.sin(t * 2.6)) + 0.03 * math.sin(t * 9)
+        sway = 3.0 * size / 0.06 * math.sin(t * 2.3) if size else 0.0
+        w, h = self.width(), self.height()
+        cx, base = w / 2, h - 12
+        height = (h - 18) * min(1.0, tall + flicker)
+        width = 9 + 3 * tall
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        centre, glow = self.rect().center(), 21
-        if self.state == "listening":
-            glow = 17 + 4 * (1 + math.sin(self.phase * 2)) / 2
-        elif self.state == "speaking":
-            glow = 16 + 6 * abs(math.sin(self.phase * 6))  # quicker, like a voice
-        halo = QRadialGradient(centre, glow)
-        halo.setColorAt(0.0, colour)
-        fade = QColor(colour)
-        fade.setAlpha(0)
-        halo.setColorAt(1.0, fade)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(halo)
-        painter.drawEllipse(centre, glow, glow)
-        painter.setBrush(colour)
-        painter.drawEllipse(centre, 10, 10)
+
+        if glow:
+            radius = 24 + 4 * tall
+            if self.state == "listening":
+                radius += 4 * (1 + math.sin(self.phase * 2.2)) / 2
+            halo = QRadialGradient(QPointF(cx, base - height * 0.45), radius)
+            inner = QColor(glow)
+            inner.setAlpha(110 if self.state in ("listening", "thinking", "speaking") else 70)
+            outer = QColor(glow)
+            outer.setAlpha(0)
+            halo.setColorAt(0.0, inner)
+            halo.setColorAt(1.0, outer)
+            painter.setBrush(halo)
+            painter.drawEllipse(QPointF(cx, base - height * 0.45), radius, radius)
+
+        # The hearthstone: a dim violet line under the fire.
+        stone = QColor("#4b3a6e")
+        stone.setAlpha(170)
+        painter.setBrush(stone)
+        painter.drawRoundedRect(cx - 17, base + 2, 34, 4, 2, 2)
+
+        body = QLinearGradient(QPointF(cx, base), QPointF(cx, base - height))
+        bottom, top = QColor(flame), QColor(flame).lighter(125)
+        top.setAlpha(150)
+        body.setColorAt(0.0, bottom)
+        body.setColorAt(1.0, top)
+        painter.setBrush(body)
+        painter.drawPath(self._flame(cx, base, height, width, sway))
+
+        heart = QLinearGradient(QPointF(cx, base), QPointF(cx, base - height * 0.6))
+        light = QColor(core)
+        fade = QColor(core)
+        fade.setAlpha(60)
+        heart.setColorAt(0.0, light)
+        heart.setColorAt(1.0, fade)
+        painter.setBrush(heart)
+        painter.drawPath(self._flame(cx, base, height * 0.58, width * 0.5, sway * 0.6))
+
         if self.state == "thinking":
-            painter.setPen(QPen(colour, 3, Qt.SolidLine, Qt.RoundCap))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawArc(self.rect().adjusted(5, 5, -5, -5), int(-math.degrees(self.phase * 2) * 16), 100 * 16)
+            for n in range(3):
+                angle = self.phase * 2.4 + n * 2 * math.pi / 3
+                spark = QColor(STATE_COLOURS["thinking"])
+                spark.setAlpha(int(140 + 110 * (1 + math.sin(angle)) / 2))
+                painter.setBrush(spark)
+                painter.drawEllipse(QPointF(cx + 21 * math.cos(angle), base - height * 0.45 + 8 * math.sin(angle)),
+                                    2.4, 2.4)
         painter.end()
 
 
@@ -404,6 +479,7 @@ class Transcript(QScrollArea):
         self._welcome.setAlignment(Qt.AlignCenter)
         self._welcome.setTextFormat(Qt.RichText)
         self._welcome.setText(f'<img src="{LOGO_PATH}" width="96" height="96"><br><br>'
+                              "The hearth is lit.<br>"
                               "Say <b>“Rise Hestia”</b> to talk, or type below.")
         self._rows.addStretch(1)
         self._rows.addWidget(self._welcome)
@@ -548,7 +624,7 @@ class ChatWindow(QMainWindow):
         row.addWidget(self.input)
         row.addWidget(self.send_button)
 
-        self.orb = Orb()
+        self.orb = Hearth()
         self.title = QLabel("Hestia")
         self.title.setObjectName("title")
         self.state_label = QLabel()
@@ -753,7 +829,10 @@ class ChatWindow(QMainWindow):
             return "muted"
         if self.speaker and self.speaker.speaking:
             return "speaking"
-        return "listening" if self.in_conversation else "ready"
+        if self.in_conversation:
+            return "listening"
+        # Standby only means something when there's a wake phrase to wait for.
+        return "resting" if self.listener and not self.loaded else "ready"
 
     def _refresh_state(self):
         if self.ready and not self.busy:
