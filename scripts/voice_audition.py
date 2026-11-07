@@ -4,6 +4,8 @@ Hear Hestia's candidate voices and pick one for voice.yaml.
     venv\Scripts\python scripts\voice_audition.py            play every candidate
     venv\Scripts\python scripts\voice_audition.py --high     the same, on the full-precision model
     venv\Scripts\python scripts\voice_audition.py --save     also write each one to audition\ as a .wav
+    venv\Scripts\python scripts\voice_audition.py --more     round two: the voices not in round one
+    venv\Scripts\python scripts\voice_audition.py --tune     round three: variations on the round-two favourite
     venv\Scripts\python scripts\voice_audition.py af_bella "af_heart:60,bf_emma:40"
                                                              only the voices or blends named
 
@@ -25,9 +27,9 @@ sys.path.insert(0, ROOT)
 import voice  # noqa: E402
 
 LINES = (
-    "Ah, thou hast returned. 'Tis good to hear thee. "
-    "Tomorrow looks clear, though cold, so take thy coat ere thou leavest. "
-    "Thy files are backed up, and the folder is called Projects, two thousand twenty six."
+    "Welcome back. 'Tis good to hear thee. "
+    "Tomorrow looks clear, though cold, so take a coat before you head out. "
+    "Your files are backed up, and the folder is called Projects, two thousand twenty six."
 )
 
 # (voice or blend, accent, speed, what it's like)
@@ -46,6 +48,44 @@ CANDIDATES = [
     ({"bf_emma": 50, "af_bella": 50}, "en-gb", 0.92, "blend: British and rich"),
     ({"bf_isabella": 60, "af_nicole": 40}, "en-gb", 0.9, "blend: warm and soft"),
     ({"af_heart": 50, "af_aoede": 50}, "en-us", 0.92, "blend: warm and low"),
+]
+
+# Round two: every other English female voice, slowed a touch, plus calmer blends.
+MORE = [
+    ("af_sky", "en-us", 0.9, "airy, gentle"),
+    ("af_river", "en-us", 0.9, "even, relaxed"),
+    ("af_sarah", "en-us", 0.9, "plain, measured"),
+    ("af_jessica", "en-us", 0.9, "light, friendly"),
+    ("af_nova", "en-us", 0.9, "clear, bright"),
+    ("af_alloy", "en-us", 0.9, "neutral, steady"),
+    ("bf_emma", "en-gb", 0.85, "British, slow and stately"),
+    ("af_heart", "en-gb", 0.88, "her voice, with a British accent and slower"),
+    ({"af_heart": 50, "af_nicole": 50}, "en-us", 0.88, "blend: warm and hushed"),
+    ({"af_aoede": 60, "af_sky": 40}, "en-us", 0.88, "blend: low and airy"),
+    ({"bf_emma": 40, "af_nicole": 30, "af_heart": 30}, "en-gb", 0.86, "blend: poised, soft, warm"),
+    ({"af_river": 50, "af_heart": 50}, "en-us", 0.9, "blend: even and warm"),
+]
+
+# Round three: variations on {bf_emma: 40, af_nicole: 30, af_heart: 30}, en-gb, 0.86.
+# One thing changes at a time, so it's clear what each difference does.
+_BASE = {"bf_emma": 40, "af_nicole": 30, "af_heart": 30}
+TUNE = [
+    (_BASE, "en-gb", 0.86, "the favourite, as it was"),
+    # speed
+    (_BASE, "en-gb", 0.80, "slower"),
+    (_BASE, "en-gb", 0.83, "a little slower"),
+    (_BASE, "en-gb", 0.90, "a little quicker"),
+    # mix
+    ({"bf_emma": 50, "af_nicole": 25, "af_heart": 25}, "en-gb", 0.86, "more Emma: more poise and accent"),
+    ({"bf_emma": 30, "af_nicole": 35, "af_heart": 35}, "en-gb", 0.86, "less Emma: softer, less British"),
+    ({"bf_emma": 40, "af_nicole": 40, "af_heart": 20}, "en-gb", 0.86, "more Nicole: more hushed and smooth"),
+    ({"bf_emma": 40, "af_nicole": 20, "af_heart": 40}, "en-gb", 0.86, "more Heart: warmer, more present"),
+    # a fourth voice, a little of it
+    ({"bf_emma": 35, "af_nicole": 25, "af_heart": 25, "af_aoede": 15}, "en-gb", 0.86, "plus a little Aoede: lower, smoother"),
+    ({"bf_emma": 35, "af_nicole": 25, "af_heart": 25, "bf_isabella": 15}, "en-gb", 0.86, "plus a little Isabella: warmer British"),
+    ({"bf_isabella": 40, "af_nicole": 30, "af_heart": 30}, "en-gb", 0.86, "Isabella in place of Emma"),
+    # accent
+    (_BASE, "en-us", 0.86, "same mix, American pronunciation"),
 ]
 
 
@@ -87,7 +127,7 @@ def main():
     from kokoro_onnx import Kokoro
     import sounddevice
     tts = Kokoro(model, voice.KOKORO_VOICES)
-    candidates = CANDIDATES
+    candidates = TUNE if "--tune" in sys.argv else MORE if "--more" in sys.argv else CANDIDATES
     if args:
         candidates = [(parse(a), "en-gb" if parse(a) and "bf_" in str(a) else "en-us", 0.95, "")
                       for a in args]

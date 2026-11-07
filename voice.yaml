@@ -5,10 +5,10 @@
 # One Kokoro voice, or a blend mixed by weight:
 #   voice: bf_emma
 #   voice: {af_heart: 60, bf_emma: 40}
-voice: {af_heart: 60, bf_emma: 40}
+voice: {bf_emma: 30, af_nicole: 35, af_heart: 35}
 
 # 0.5 (slow) to 1.5 (fast). A touch under 1.0 sounds calmer.
-speed: 0.92
+speed: 0.86
 
 # en-us or en-gb. British voices (bf_...) sound most natural with en-gb.
 accent: en-gb
