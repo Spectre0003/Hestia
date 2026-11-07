@@ -19,6 +19,10 @@ truststore>=0.9
 PySide6-Essentials>=6.8      # GUI, tray icon, single-instance check
 openwakeword>=0.6            # wake word
 faster-whisper>=1.1          # speech to text
+# kokoro-onnx 0.6.1 declares python <3.14, but that cap is stale: its own
+# dependencies (onnxruntime, ctranslate2) ship 3.14 wheels, and 0.6.1 installs
+# and runs there. On 3.14 this line fails resolution, so install the rest
+# first, then:  pip install --ignore-requires-python kokoro-onnx
 kokoro-onnx>=0.6             # text to speech
 sounddevice>=0.5             # microphone and speakers
 # Whisper on an NVIDIA GPU (voice.py falls back to the CPU without them)

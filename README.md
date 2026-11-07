@@ -30,6 +30,14 @@ venv\Scripts\python -m pip install -r requirements.txt
 venv\Scripts\python scripts\download_models.py
 ```
 
+On Python 3.14 the `requirements.txt` install stops at `kokoro-onnx`, which still
+declares a `<3.14` cap even though it works there. Install the rest first, then add it:
+
+```
+venv\Scripts\python -m pip install PySide6-Essentials openwakeword faster-whisper sounddevice
+venv\Scripts\python -m pip install --ignore-requires-python kokoro-onnx
+```
+
 Then either:
 
 - `venv\Scripts\pythonw gui.py` — the window, with a tray icon. Closing the window keeps Hestia in the tray; right-click the icon to quit, mute the microphone, or have her start with Windows. Say **"Rise Hestia"** to start a conversation: from then on just talk — she answers out loud and waits for you, no wake word needed — until **"Fall Hestia"** ends it. **"Mute Hestia"** closes the microphone until you unmute it from the tray. She can open any app in your Start menu. She can start and stop Docker for you ("start Docker", "turn off Docker"), and asks before reading out a long answer. Talking to her never brings up the window; approvals are always a click, never your voice. While she's waiting she uses under 300 MB of RAM and none of the GPU: "Rise Hestia" loads everything (about 5 seconds), and two quiet minutes put her back on standby.
